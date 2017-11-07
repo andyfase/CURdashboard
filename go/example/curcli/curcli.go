@@ -124,7 +124,7 @@ func main() {
 
 				// Set Destination Role if required
 				if len(destRoleArn) > 1 {
-					cc.SetSourceRole(destRoleArn, destExternalID)
+					cc.SetDestRole(destRoleArn, destExternalID)
 				}
 
 				// Convert CUR
