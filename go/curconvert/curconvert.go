@@ -84,6 +84,7 @@ type CurConvert struct {
 	CurFiles       []string
 	CurColumnTypes map[string]string
 	lowerColumns   bool
+	skipCols       map[int]bool
 }
 
 //
@@ -225,7 +226,10 @@ func (c *CurConvert) ParseCur() error {
 	// Store all column names from manifests
 	cols := j["columns"].([]interface{})
 	seen := make(map[string]bool)
+	c.skipCols = make(map[int]bool)
+	i := -1
 	for column := range cols {
+		i++
 		t := cols[column].(map[string]interface{})
 		columnName := t["category"].(string) + "/" + t["name"].(string)
 		columnName = strings.Replace(columnName, ":", "_", -1)
@@ -235,6 +239,7 @@ func (c *CurConvert) ParseCur() error {
 
 		// Skip duplicate columns
 		if _, ok := seen[columnNameLower]; ok {
+			c.skipCols[i] = true
 			continue
 		}
 		// Check for Type over-ride
@@ -347,7 +352,10 @@ func (c *CurConvert) ParquetCur(inputFile string) (string, error) {
 
 		recParquet := make([]*string, len(rec))
 		for i := 0; i < len(rec); i++ {
-			recParquet[i] = &rec[i]
+			_, skip := c.skipCols[i]
+			if !skip {
+				recParquet[i] = &rec[i]
+			}
 		}
 		ph.WriteString(recParquet)
 		i++
