@@ -37,7 +37,7 @@ func main() {
 					Name:        "destPath, dp",
 					Usage:       "Destination Path to store converted CUR. (Optional) defaults to parquet-cur/YYYYMM/",
 					Value:       "",
-					Destination: &destBucket,
+					Destination: &destPath,
 				},
 				cli.StringFlag{
 					Name:        "reportPath, rp",
