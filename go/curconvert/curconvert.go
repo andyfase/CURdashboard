@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"strings"
 
@@ -152,16 +151,46 @@ func (c *CurConvert) getCreds(arn string, externalID string, sess *session.Sessi
 	return stscreds.NewCredentials(sess, arn, func(p *stscreds.AssumeRoleProvider) {})
 }
 
+func (c *CurConvert) getBucketLocation(bucket string, arn string, externalID string) (string, error) {
+
+	// Init Session
+	sess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
+	if err != nil {
+		return "", err
+	}
+
+	// if needed set creds for AssumeRole and reset session
+	if len(arn) > 0 {
+		sess = sess.Copy(&aws.Config{Credentials: c.getCreds(arn, externalID, sess)})
+	}
+
+	// Get Bucket location
+	svc := s3.New(sess)
+	res, err := svc.GetBucketLocation(&s3.GetBucketLocationInput{
+		Bucket: aws.String(bucket),
+	})
+
+	if err != nil {
+		return "", err
+	}
+
+	// empty string returned for buckets existing in us-east-1! https://docs.aws.amazon.com/AmazonS3/latest/API/RESTBucketGETlocation.html
+	if res.LocationConstraint == nil || len(*res.LocationConstraint) < 1 {
+		return "us-east-1", nil
+	}
+	return *res.LocationConstraint, nil
+}
+
 func (c *CurConvert) initS3Downloader(bucket string, arn string, externalID string) (*s3manager.Downloader, error) {
 
 	// get location of bucket
-	resp, err := http.Head("https://" + bucket + ".s3.amazonaws.com")
+	bucketLocation, err := c.getBucketLocation(bucket, arn, externalID)
 	if err != nil {
 		return nil, err
 	}
 
 	// Init Session
-	sess, err := session.NewSession(&aws.Config{Region: aws.String(resp.Header.Get("X-Amz-Bucket-Region"))})
+	sess, err := session.NewSession(&aws.Config{Region: aws.String(bucketLocation)})
 	if err != nil {
 		return nil, err
 	}
@@ -177,13 +206,13 @@ func (c *CurConvert) initS3Downloader(bucket string, arn string, externalID stri
 func (c *CurConvert) initS3Uploader(bucket string, arn string, externalID string) (*s3manager.Uploader, error) {
 
 	// get location of bucket
-	resp, err := http.Head("https://" + bucket + ".s3.amazonaws.com")
+	bucketLocation, err := c.getBucketLocation(bucket, arn, externalID)
 	if err != nil {
 		return nil, err
 	}
 
 	// Init Session
-	sess, err := session.NewSession(&aws.Config{Region: aws.String(resp.Header.Get("X-Amz-Bucket-Region"))})
+	sess, err := session.NewSession(&aws.Config{Region: aws.String(bucketLocation)})
 	if err != nil {
 		return nil, err
 	}
