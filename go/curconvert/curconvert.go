@@ -155,6 +155,9 @@ func (c *CurConvert) GetCURColumns() ([]CurColumn, error) {
 
 	cols := []CurColumn{}
 	for i := 0; i < len(c.CurColumns); i++ {
+		if c.CurColumns[i].Type == "UTF8" {
+			c.CurColumns[i].Type = "STRING"
+		}
 		cols = append(cols, CurColumn{Name: c.CurColumns[i].Name, Type: c.CurColumns[i].Type})
 	}
 

@@ -557,13 +557,9 @@ func createAthenaTable(svcAthena *athena.Athena, dbName string, sql string, colu
 
 	var cols string
 	for col := range columns {
-		if columns[col].Type == "UTF8" {
-			columns[col].Type = "STRING"
-		}
 		cols += "`" + columns[col].Name + "` " + columns[col].Type + ",\n"
 	}
 	cols = cols[:strings.LastIndex(cols, ",")]
-
 	sql = substituteParams(sql, map[string]string{"**DBNAME**": dbName, "**DATE**": date, "**COLUMNS**": cols, "**S3**": s3Path})
 
 	if _, err := sendQuery(svcAthena, dbName, sql, region, account); err != nil {
