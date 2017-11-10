@@ -65,6 +65,12 @@ func (pf *parquetFile) Close() {
 }
 
 //
+type CurColumn struct {
+	Name string
+	Type string
+}
+
+//
 // CurConvert class and functions
 type CurConvert struct {
 	sourceBucket string
@@ -137,6 +143,22 @@ func (c *CurConvert) SetDestRole(arn string, externalID string) error {
 	c.destArn = arn
 	c.destExternalID = externalID
 	return nil
+}
+
+//
+// GetCURColumns - Converts processed CUR columns into map and returns it
+func (c *CurConvert) GetCURColumns() ([]CurColumn, error) {
+
+	if c.CurColumns == nil || len(c.CurColumns) < 1 {
+		return nil, errors.New("cannot fetch CUR column data, call ParseCUR first")
+	}
+
+	cols := []CurColumn{}
+	for i := 0; i < len(c.CurColumns); i++ {
+		cols = append(cols, CurColumn{Name: c.CurColumns[i].Name, Type: c.CurColumns[i].Type})
+	}
+
+	return cols, nil
 }
 
 func (c *CurConvert) getCreds(arn string, externalID string, sess *session.Session) *credentials.Credentials {
