@@ -66,8 +66,7 @@ type Athena struct {
 }
 
 type AthenaResponse struct {
-	Columns []map[string]string
-	Rows    []map[string]string
+	Rows []map[string]string
 }
 
 type Config struct {
@@ -212,11 +211,26 @@ func sendQuery(svc *athena.Athena, db string, sql string, account string, region
 	// loop through results (paginated call)
 	err = svc.GetQueryResultsPages(&ip,
 		func(page *athena.GetQueryResultsOutput, lastPage bool) bool {
-			fmt.Println(page)
-			if lastPage {
-				return false
+			i := 0
+			var colNames []string
+			for row := range page.ResultSet.Rows {
+				if i < 1 { // first row contains column names - which we use in any subsequent rows to produce map[columnname]values
+					for i := range page.ResultSet.Rows[row].Data {
+						colNames = append(colNames, *page.ResultSet.Rows[row].Data[i].VarCharValue)
+					}
+				} else {
+					result := make(map[string]string)
+					for i := range page.ResultSet.Rows[row].Data {
+						result[colNames[i]] = *page.ResultSet.Rows[row].Data[i].VarCharValue
+					}
+					results.Rows = append(results.Rows, result)
+				}
+				i++
 			}
-			return true
+			if lastPage {
+				return false // return false to end paginated calls
+			}
+			return true // keep going if there are more pages to fetch
 		})
 	if err != nil {
 		return results, err
