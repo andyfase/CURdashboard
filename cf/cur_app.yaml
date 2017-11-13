@@ -1,0 +1,341 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: CUR Dashboard app stack including ASG with timed scale-up / scale-down policy.
+
+Parameters:
+  ResourcePrefix:
+    Type: String
+    Description: A description to identify resources. Use an identical value across stacks (e.g. "cur-dashboard")
+    Default: cur-dashboard
+    MinLength: 2
+
+  CURBucket:
+    Type: String
+    Description: S3 bucket configured for Cost and Usage Reports
+    MinLength: 2
+
+  ReportName:
+    Type: String
+    Description: The CUR Report Name setup in the billing dashboard
+    MinLength: 2
+
+  ReportPath:
+    Type: String
+    Description: The CUR Report Path setup in the billing dashboard
+    MinLength: 2
+
+  CURUploadBucket:
+    Type: String
+    Description: OPTIONAL S3 bucket for storing converted CUR files (only use this is your CUR bucket is invalid for use with Athena i.e. contains a underscore)
+
+  InstanceType:
+    Type: String
+    Description: Instance Type to run. Larger instances required for larger CUR's
+    Default: c4.large
+    AllowedValues:
+      - c4.large
+      - c4.xlarge
+      - c4.2xlarge
+      - m4.large
+      - m4.xlarge
+      - m4.2xlarge
+      - c5.large
+      - c5.xlarge
+      - c5.2xlarge
+
+  SpotPrice:
+    Type: Number
+    Default: 0.50
+    MinValue: 0.01
+    Description: The Maximum price for the instance you want to pay (Note you will be charged based on the current price)
+
+  Schedule:
+    Type: Number
+    Default: 4
+    MinValue: 1
+    Description: Time gap (in hours) between CUR automatic processing (the lower, the more frequent the conversion will occur)
+
+  GitURL:
+    Type: String
+    Default: "https://github.com/andyfase/CURdashboard.git"
+    MinLength: 2
+    Description: "URL of the git repo that will be checked out and used when configuring the EC2 instance, use your cloned repo."
+
+  GitBranch:
+    Type: String
+    Default: "master"
+    MinLength: 2
+    Description: "Branch of your GIT repo that the EC2 instance will checkout. Change this from 'master' to test out seperate code branches before they are merged to master"
+  
+  KeypairName:
+    Type: AWS::EC2::KeyPair::KeyName
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      "ami": "ami-8c1be5f6"
+    us-east-2: 
+      "ami": "ami-c5062ba0"
+    us-west-2:
+      "ami": "ami-e689729e"
+    eu-central-1:
+      "ami": "ami-c7ee5ca8"
+    eu-west-1:
+      "ami": "ami-acd005d5"
+    eu-west-2:
+      "ami": "ami-1a7f6d7e"
+    ap-south-1:
+      "ami": "ami-4fc58420"
+    ap-northeast-2:
+      "ami": "ami-9bec36f5"
+    ap-southeast-1:
+      "ami": "ami-0797ea64"
+    ap-southeast-2:
+      "ami": "ami-8536d6e7"
+    ap-northeast-1:
+      "ami": "ami-2a69be4c"
+
+Conditions:
+  NoUploadBucket:
+    "Fn::Equals":
+      - { Ref: CURUploadBucket }
+      - ""
+
+Resources:
+  IamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: 'PermitAssumeRoleEc2'
+            Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+      Path: /
+      Policies:
+        - PolicyName: autoCURPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+                 - PolicyName: "autoCURPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:RunQuery
+                  - athena:StartQueryExecution
+                  - glue:CreateDatabase
+                  - glue:CreateTable
+                  - glue:GetDatabase
+                  - glue:GetTable
+                Resource:
+                  - "*"
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:ListMultipartUploadParts
+                  - s3:AbortMultipartUpload
+                  - s3:CreateBucket
+                  - s3:PutObject
+                Resource:
+                  - "arn:aws:s3:::aws-athena-query-results-*"
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                  - s3:GetObject
+                  - s3:ListObjects
+                Resource:
+                  - "Fn::Join":
+                    - ""
+                    -
+                      - "arn:aws:s3:::"
+                      - { Ref: CURBucket }
+                      - "/*"
+                  - "Fn::Join":
+                    - ""
+                    -
+                      - "arn:aws:s3:::"
+                      - { Ref: CURBucket }
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListObjects
+                  - s3:PutObject
+                Resource:
+                  - "Fn::Join":
+                    - ""
+                    -
+                      - "arn:aws:s3:::"
+                      - "Fn::If":
+                        - NoUploadBucket
+                        - { Ref: CURBucket }
+                        - { Ref: CURUploadBucket }
+                      - "/parquet-cur"
+                      - "/*"
+                  - "Fn::Join":
+                    - ""
+                    -
+                      - "arn:aws:s3:::"
+                      - "Fn::If":
+                        - NoUploadBucket
+                        - { Ref: CURBucket }
+                        - { Ref: CURUploadBucket }
+                      - "/parquet-cur"
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                  - ec2:DescribeReservedInstances
+                  - autoscaling:DescribeAutoScalingInstances
+                Resource:
+                  - "*"
+              - Effect: Allow
+                Action:
+                  - autoscaling:UpdateAutoScalingGroup
+                Resource: "*"
+                Condition:
+                  StringEquals: 
+                    autoscaling:ResourceTag/Name: 
+                      "Fn::Join":
+                        - 
+                          "-"
+                        -
+                          - { Ref: ResourcePrefix }
+                          - "asg"
+  IamProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - Ref: IamRole
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        "Fn::ImportValue":
+          "Fn::Sub": "${ResourcePrefix}-VpcId"
+      GroupDescription:
+        "Fn::Join":
+          -
+            "-"
+          -
+            - { Ref: ResourcePrefix }
+            - "sg"
+      Tags:
+        - Key: Name
+          Value:
+            "Fn::Join":
+              -
+                "-"
+              -
+                - { Ref: ResourcePrefix }
+                - "sg"
+
+  SecurityGroupSshIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: { Ref: SecurityGroup }
+      CidrIp: "0.0.0.0/0"
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId:
+        "Fn::FindInMap":
+          - RegionMap
+          - Ref: "AWS::Region"
+          - "ami"
+      KeyName: { Ref: KeypairName }
+      IamInstanceProfile: { Ref: IamProfile }
+      InstanceType: { Ref: InstanceType }
+      SpotPrice: { Ref: SpotPrice }
+      SecurityGroups:
+        - { Ref: SecurityGroup }
+      UserData:
+        "Fn::Base64":
+          "Fn::Join":
+            - "\n"
+            -
+              - "#!/bin/bash"
+              - ""
+              - "## Install git and clone repo"
+              - "yum install -y git"
+              - "Fn::Sub": "git clone ${GitURL}"
+              - "cd CURdashboard"
+              - "Fn::Sub": "git checkout ${GitBranch}"
+              - "## Execute analyzeCUR binary"
+              - "Fn::Sub": "chmod 755 ./bin/analyzeCUR && ./bin/analyzeCUR -bucket ${CURBucket} -reportname ${ReportName} -reportpath ${ReportPath} -account ${AWS::AccountId} -region ${AWS::Region}  -destbucket ${CURUploadBucket}"
+              - "##  Self terminate running instance"
+              - "instance=`curl -s http://169.254.169.254/latest/meta-data/instance-id`"
+              - "Fn::Sub": "group=`aws autoscaling describe-auto-scaling-instances --instance-ids $instance --region ${AWS::Region} --query AutoScalingInstances[0].AutoScalingGroupName --output text`"
+              - "Fn::Sub": "aws autoscaling update-auto-scaling-group --auto-scaling-group-name $group --region ${AWS::Region} --desired-capacity 0"
+
+
+  Asg:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      Tags:
+        - 
+          Key: Name
+          Value:
+            "Fn::Join":
+              - "-"
+              -
+                - { Ref: ResourcePrefix }
+                - "asg"
+          PropagateAtLaunch: true
+        -
+          Key: Project
+          Value: "CURdashboard"
+          PropagateAtLaunch: true
+
+      MinSize: 0
+      MaxSize: 1
+      DesiredCapacity: 0
+      LaunchConfigurationName: { Ref: LaunchConfig }
+      VPCZoneIdentifier:
+        - "Fn::ImportValue":
+            "Fn::Sub": "${ResourcePrefix}-PublicSubnetAZ0"
+        - "Fn::ImportValue":
+            "Fn::Sub": "${ResourcePrefix}-PublicSubnetAZ1"
+
+  AsgScheduleUp:
+    Type: AWS::AutoScaling::ScheduledAction
+    Properties:
+      AutoScalingGroupName: { Ref: Asg }
+      DesiredCapacity: 1
+      Recurrence:
+          "Fn::Sub": "1 */${Schedule} * * *"
+
+  AsgScheduleDown:
+    Type: AWS::AutoScaling::ScheduledAction
+    Properties:
+      AutoScalingGroupName: { Ref: Asg }
+      DesiredCapacity: 0
+      Recurrence:
+          "Fn::Sub": "55 */1 * * *"
+
+Outputs:
+  SgIdExport:
+    Value: { Ref: SecurityGroup }
+    Export:
+      Name:
+        "Fn::Join":
+          - "-"
+          -
+            - { Ref: ResourcePrefix }
+            - "SgId"

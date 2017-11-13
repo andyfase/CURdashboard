@@ -1,0 +1,243 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Network stack for CUR Dashboard
+
+Parameters:
+  ResourcePrefix:
+    Type: String
+    Description: A description to identify resources. Use an identical value across stacks (e.g. "cur-dashboard")
+    Default: cur-dashboard
+    MinLength: 2
+
+  VpcCidr:
+    Type: String
+    Description: A network CIDR e.g. "10.0.0.0/25"
+    AllowedPattern: ^\d+\.\d+\.\d+\.\d+\/\d+$
+    Default: 10.0.0.0/25
+
+  PublicSubnetAZ0Cidr:
+    Type: String
+    Description: A subnet CIDR e.g. "10.0.0.0/27"
+    AllowedPattern: ^\d+\.\d+\.\d+\.\d+\/\d+$
+    Default: 10.0.0.0/27
+
+  PrivateSubnetAZ0Cidr:
+    Type: String
+    Description: A subnet CIDR e.g. "10.0.0.32/27"
+    AllowedPattern: ^\d+\.\d+\.\d+\.\d+\/\d+$
+    Default: 10.0.0.32/27
+
+
+  PublicSubnetAZ1Cidr:
+    Type: String
+    Description: A subnet CIDR e.g. "10.0.0.64/27"
+    AllowedPattern: ^\d+\.\d+\.\d+\.\d+\/\d+$
+    Default: 10.0.0.64/27
+
+
+  PrivateSubnetAZ1Cidr:
+    Type: String
+    Description: A subnet CIDR e.g. "10.0.0.96/27
+    AllowedPattern: ^\d+\.\d+\.\d+\.\d+\/\d+$
+    Default: 10.0.0.96/27
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      EnableDnsSupport: True
+      EnableDnsHostnames: True
+      InstanceTenancy: default
+      CidrBlock: { Ref: VpcCidr }
+      Tags: [ { Key: Name, Value: { Ref: ResourcePrefix } } ]
+
+  DHCPSettings:
+    Type: AWS::EC2::DHCPOptions
+    Properties:
+      DomainNameServers:  [ "AmazonProvidedDNS" ]
+      DomainName:  ec2-internal
+
+  DHCPSettingsAssociation:
+    Type: AWS::EC2::VPCDHCPOptionsAssociation
+    Properties:
+      VpcId: { "Ref" : "Vpc" }
+      DhcpOptionsId: { "Ref" : "DHCPSettings" }
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value:
+            "Fn::Join":
+              - "-"
+              - - { Ref: ResourcePrefix }
+                - "internetgw"
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: { "Ref": "Vpc" }
+      InternetGatewayId : { "Ref" : "InternetGateway" }
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: { Ref : Vpc }
+      Tags:
+        - Key: Name
+          Value:
+            "Fn::Join":
+              - "-"
+              - - { Ref: ResourcePrefix }
+                - "rtb"
+                - "public"
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: { "Ref": "Vpc" }
+      Tags:
+        - Key: Name
+          Value:
+            "Fn::Join":
+              - "-"
+              - - { Ref: ResourcePrefix }
+                - "rtb"
+                - "private"
+
+  RoutePublicToInternet:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: "0.0.0.0/0"
+      RouteTableId:  { Ref: PublicRouteTable }
+      GatewayId:     { Ref: InternetGateway }
+
+  PublicSubnetAZ0:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: { Ref: Vpc }
+      AvailabilityZone: { "Fn::Select": [ "0", { "Fn::GetAZs": "" } ] }
+      MapPublicIpOnLaunch: "true"
+      CidrBlock: { Ref: PublicSubnetAZ0Cidr }
+      Tags:
+        - Key: Name
+          Value:
+            "Fn::Join":
+              - "-"
+              - - { Ref: ResourcePrefix }
+                - "public"
+                - { "Fn::Select": [ "0", { "Fn::GetAZs": "" } ] }
+  SubnetRouteTableAssociationPublicAZ0:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: { Ref: PublicSubnetAZ0 }
+      RouteTableId: { Ref: PublicRouteTable }
+
+  PrivateSubnetAZ0:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: { Ref: Vpc }
+      AvailabilityZone: { "Fn::Select": [ "0", { "Fn::GetAZs": "" } ] }
+      CidrBlock: { Ref: PrivateSubnetAZ0Cidr }
+      Tags:
+        - Key: Name
+          Value:
+            "Fn::Join":
+              - "-"
+              - - { Ref: ResourcePrefix }
+                - "private"
+                - { "Fn::Select": [ "0", { "Fn::GetAZs": "" } ] }
+  SubnetRouteTableAssociationPrivateAZ0:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: { Ref: PrivateSubnetAZ0 }
+      RouteTableId: { Ref: PrivateRouteTable }
+
+  PublicSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: { Ref: Vpc }
+      AvailabilityZone: { "Fn::Select": [ "1", { "Fn::GetAZs": "" } ] }
+      MapPublicIpOnLaunch: "true"
+      CidrBlock: { Ref: PublicSubnetAZ1Cidr }
+      Tags:
+        - Key: Name
+          Value:
+            "Fn::Join":
+              - "-"
+              - - { Ref: ResourcePrefix }
+                - "public"
+                - { "Fn::Select": [ "1", { "Fn::GetAZs": "" } ] }
+  SubnetRouteTableAssociationPublicAZ1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: { Ref: PublicSubnetAZ1 }
+      RouteTableId: { Ref: PublicRouteTable }
+
+  PrivateSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: { Ref: Vpc }
+      AvailabilityZone: { "Fn::Select": [ "1", { "Fn::GetAZs": "" } ] }
+      CidrBlock: { Ref: PrivateSubnetAZ1Cidr }
+      Tags:
+        - Key: Name
+          Value:
+            "Fn::Join":
+              - "-"
+              - - { Ref: ResourcePrefix }
+                - "private"
+                - { "Fn::Select": [ "1", { "Fn::GetAZs": "" } ] }
+  SubnetRouteTableAssociationPrivateAZ1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: { Ref: PrivateSubnetAZ1 }
+      RouteTableId: { Ref: PrivateRouteTable }
+
+
+Outputs:
+  VpcIdExport:
+    Value: { Ref: Vpc }
+    Export:
+      Name:
+        "Fn::Join":
+          - "-"
+          - - { Ref: ResourcePrefix }
+            - "VpcId"
+
+  PublicSubnetAZ0Export:
+    Value: { Ref: PublicSubnetAZ0 }
+    Export:
+      Name:
+        "Fn::Join":
+          - "-"
+          - - { Ref: ResourcePrefix }
+            - PublicSubnetAZ0
+
+  PrivateSubnetAZ0Export:
+    Value: { Ref: PrivateSubnetAZ0 }
+    Export:
+      Name:
+        "Fn::Join":
+          - "-"
+          - - { Ref: ResourcePrefix }
+            - PrivateSubnetAZ0
+
+  PublicSubnetAZ1Export:
+    Value: { Ref: PublicSubnetAZ1 }
+    Export:
+      Name:
+        "Fn::Join":
+          - "-"
+          - - { Ref: ResourcePrefix }
+            - PublicSubnetAZ1
+
+  PrivateSubnetAZ1Export:
+    Value: { Ref: PrivateSubnetAZ1 }
+    Export:
+      Name:
+        "Fn::Join":
+          - "-"
+          - - { Ref: ResourcePrefix }
+            - PrivateSubnetAZ1
