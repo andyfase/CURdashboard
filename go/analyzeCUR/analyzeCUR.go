@@ -86,12 +86,13 @@ var maxConcurrentQueries = 5
 /*
 Function reads in and validates command line parameters
 */
-func getParams(configFile *string, region *string, bucket *string, account *string, curReportName *string, curReportPath *string, curDestPath *string) error {
+func getParams(configFile *string, region *string, sourceBucket *string, destBucket *string, account *string, curReportName *string, curReportPath *string, curDestPath *string) error {
 
 	// Define input command line config parameter and parse it
 	flag.StringVar(configFile, "config", defaultConfigPath, "Input config file for analyzeDBR")
 	flag.StringVar(region, "region", "", "Athena Region")
-	flag.StringVar(bucket, "bucket", "", "AWS Bucket where CUR files sit")
+	flag.StringVar(sourceBucket, "bucket", "", "AWS Bucket where CUR files sit")
+	flag.StringVar(destBucket, "destbucket", "", "AWS Bucket where where Parquet files will be uploaded (Optional - use as override-only) ")
 	flag.StringVar(account, "account", "", "AWS Account #")
 	flag.StringVar(curReportName, "reportname", "", "CUR Report Name")
 	flag.StringVar(curReportPath, "reportpath", "", "CUR Report PAth")
@@ -104,7 +105,7 @@ func getParams(configFile *string, region *string, bucket *string, account *stri
 	regexRegion := regexp.MustCompile(`^\w+-\w+-\d$`)
 	regexAccount := regexp.MustCompile(`^\d+$`)
 
-	if regexEmpty.MatchString(*bucket) {
+	if regexEmpty.MatchString(*sourceBucket) {
 		return errors.New("Must provide valid AWS DBR bucket")
 	}
 	if !regexRegion.MatchString(*region) {
@@ -116,6 +117,9 @@ func getParams(configFile *string, region *string, bucket *string, account *stri
 	}
 	if regexEmpty.MatchString(*curReportName) {
 		return errors.New("Must provide valid CUR Report Name")
+	}
+	if destBucket == nil || len(*destBucket) < 1 {
+		*destBucket = *sourceBucket
 	}
 
 	return nil
@@ -166,7 +170,6 @@ Then recieves responses in JSON which is converted back into a struct and return
 func sendQuery(svc *athena.Athena, db string, sql string, account string, region string) (AthenaResponse, error) {
 
 	var results AthenaResponse
-
 	var s athena.StartQueryExecutionInput
 	s.SetQueryString(sql)
 
@@ -535,7 +538,7 @@ func riUtilization(sess *session.Session, svcAthena *athena.Athena, conf Config,
 	return nil
 }
 
-func processCUR(bucket string, reportName string, reportPath string, destPath string) ([]curconvert.CurColumn, string, error) {
+func processCUR(sourceBucket string, reportName string, reportPath string, destPath string, destBucket string) ([]curconvert.CurColumn, string, error) {
 
 	// Generate CUR Date Format which is YYYYMM01-YYYYMM01
 	start := time.Now()
@@ -553,7 +556,7 @@ func processCUR(bucket string, reportName string, reportPath string, destPath st
 	}
 
 	// Init CUR Converter
-	cc := curconvert.NewCurConvert(bucket, manifest, bucket, destPath)
+	cc := curconvert.NewCurConvert(sourceBucket, manifest, destBucket, destPath)
 	// Convert CUR
 	if err := cc.ConvertCur(); err != nil {
 		return nil, "", err
@@ -564,7 +567,7 @@ func processCUR(bucket string, reportName string, reportPath string, destPath st
 		return nil, "", err
 	}
 
-	return cols, "s3://" + bucket + "/" + destPath + "/", nil
+	return cols, "s3://" + destBucket + "/" + destPath + "/", nil
 }
 
 func createAthenaTable(svcAthena *athena.Athena, dbName string, sql string, columns []curconvert.CurColumn, s3Path string, date string, region string, account string) error {
@@ -585,8 +588,8 @@ func createAthenaTable(svcAthena *athena.Athena, dbName string, sql string, colu
 
 func main() {
 
-	var configFile, region, key, secret, account, bucket, curReportName, curReportPath, curDestPath string
-	if err := getParams(&configFile, &region, &bucket, &account, &curReportName, &curReportPath, &curDestPath); err != nil {
+	var configFile, region, key, secret, account, sourceBucket, destBucket, curReportName, curReportPath, curDestPath string
+	if err := getParams(&configFile, &region, &sourceBucket, &destBucket, &account, &curReportName, &curReportPath, &curDestPath); err != nil {
 		log.Fatal(err)
 	}
 
@@ -596,7 +599,7 @@ func main() {
 	}
 
 	// convert CUR
-	columns, s3Path, err := processCUR(bucket, curReportName, curReportPath, curDestPath)
+	columns, s3Path, err := processCUR(sourceBucket, curReportName, curReportPath, curDestPath, destBucket)
 	if err != nil {
 		log.Fatal(err)
 	}
