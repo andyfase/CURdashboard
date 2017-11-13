@@ -80,7 +80,7 @@ type Config struct {
 End of configuraton structs
 */
 
-var defaultConfigPath = "./analyzeDBR.config"
+var defaultConfigPath = "./analyzeCUR.config"
 var maxConcurrentQueries = 5
 
 /*
@@ -621,8 +621,6 @@ func main() {
 	if err := createAthenaTable(svcAthena, conf.Athena.DbName, conf.Athena.TableSQL, columns, s3Path, date, region, account); err != nil {
 		log.Fatal(err)
 	}
-
-	log.Fatal("done")
 
 	// If RI analysis enabled - do it
 	if conf.RI.Enabled {
