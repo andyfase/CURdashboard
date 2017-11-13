@@ -241,16 +241,6 @@ Resources:
               -
                 - { Ref: ResourcePrefix }
                 - "sg"
-
-  SecurityGroupSshIngress:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      GroupId: { Ref: SecurityGroup }
-      CidrIp: "0.0.0.0/0"
-      IpProtocol: tcp
-      FromPort: 22
-      ToPort: 22
-
   LaunchConfig:
     Type: AWS::AutoScaling::LaunchConfiguration
     Properties:
@@ -278,7 +268,10 @@ Resources:
               - "cd CURdashboard"
               - "Fn::Sub": "git checkout ${GitBranch}"
               - "## Execute analyzeCUR binary"
-              - "Fn::Sub": "chmod 755 ./bin/analyzeCUR && ./bin/analyzeCUR -bucket ${CURBucket} -reportname ${ReportName} -reportpath ${ReportPath} -account ${AWS::AccountId} -region ${AWS::Region}  -destbucket ${CURUploadBucket}"
+              - "Fn::If":
+                - NoUploadBucket
+                - "Fn::Sub": "chmod 755 ./bin/analyzeCUR && ./bin/analyzeCUR -bucket ${CURBucket} -reportname ${ReportName} -reportpath ${ReportPath} -account ${AWS::AccountId} -region ${AWS::Region}"
+                - "Fn::Sub": "chmod 755 ./bin/analyzeCUR && ./bin/analyzeCUR -bucket ${CURBucket} -reportname ${ReportName} -reportpath ${ReportPath} -account ${AWS::AccountId} -region ${AWS::Region} -destbucket ${CURUploadBucket}"
               - "##  Self terminate running instance"
               - "instance=`curl -s http://169.254.169.254/latest/meta-data/instance-id`"
               - "Fn::Sub": "group=`aws autoscaling describe-auto-scaling-instances --instance-ids $instance --region ${AWS::Region} --query AutoScalingInstances[0].AutoScalingGroupName --output text`"
