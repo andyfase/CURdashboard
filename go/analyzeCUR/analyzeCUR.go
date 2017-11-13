@@ -613,10 +613,10 @@ func main() {
 	}
 
 	// convert CUR
-	// columns, s3Path, err := processCUR(sourceBucket, curReportName, curReportPath, curDestPath, destBucket)
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
+	columns, s3Path, err := processCUR(sourceBucket, curReportName, curReportPath, curDestPath, destBucket)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	/// initialize AWS GO client
 	sess, err := session.NewSession(&aws.Config{Region: aws.String(region)})
@@ -629,15 +629,15 @@ func main() {
 	svcCW := cloudwatch.New(sess)
 
 	// make sure Athena DB exists - dont care about results
-	// if _, err := sendQuery(svcAthena, "default", conf.Athena.DbSQL, region, account); err != nil {
-	// 	log.Fatal(err)
-	// }
+	if _, err := sendQuery(svcAthena, "default", conf.Athena.DbSQL, region, account); err != nil {
+		log.Fatal(err)
+	}
 
 	date := time.Now().Format("200601")
 	// make sure current Athena table exists
-	// if err := createAthenaTable(svcAthena, conf.Athena.DbName, conf.Athena.TableSQL, columns, s3Path, date, region, account); err != nil {
-	// 	log.Fatal(err)
-	// }
+	if err := createAthenaTable(svcAthena, conf.Athena.DbName, conf.Athena.TableSQL, columns, s3Path, date, region, account); err != nil {
+		log.Fatal(err)
+	}
 
 	// If RI analysis enabled - do it
 	if conf.RI.Enabled {
