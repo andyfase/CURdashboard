@@ -50,6 +50,8 @@ type RI struct {
 
 type Metric struct {
 	Enabled     bool
+	Hourly      bool
+	Daily       bool
 	Type        string
 	SQL         string
 	CwName      string
@@ -67,11 +69,16 @@ type AthenaResponse struct {
 	Rows []map[string]string
 }
 
+type MetricConfig struct {
+	Substring map[string]string
+}
+
 type Config struct {
-	General General
-	RI      RI
-	Athena  Athena
-	Metrics []Metric
+	General      General
+	RI           RI
+	Athena       Athena
+	MetricConfig MetricConfig
+	Metrics      []Metric
 }
 
 /*
@@ -243,7 +250,7 @@ func sendQuery(svc *athena.Athena, db string, sql string, account string, region
 /*
 Function takes metric data (from Athena etal) and sends through to cloudwatch.
 */
-func sendMetric(svc *cloudwatch.CloudWatch, data AthenaResponse, cwNameSpace string, cwName string, cwType string, cwDimensionName string) error {
+func sendMetric(svc *cloudwatch.CloudWatch, data AthenaResponse, cwNameSpace string, cwName string, cwType string, cwDimensionName string, interval string) error {
 
 	input := cloudwatch.PutMetricDataInput{}
 	input.Namespace = aws.String(cwNameSpace)
@@ -263,8 +270,13 @@ func sendMetric(svc *cloudwatch.CloudWatch, data AthenaResponse, cwNameSpace str
 			input.MetricData = nil
 			i = 0
 		}
+		var t time.Time
+		if interval == "hourly" {
+			t, _ = time.Parse("2006-01-02T15", data.Rows[row]["date"])
+		} else {
+			t, _ = time.Parse("2006-01-02", data.Rows[row]["date"])
+		}
 
-		t, _ := time.Parse("2006-01-02 15", data.Rows[row]["date"])
 		v, _ := strconv.ParseFloat(data.Rows[row]["value"], 64)
 		metric := cloudwatch.MetricDatum{
 			MetricName: aws.String(cwName),
@@ -293,6 +305,10 @@ func sendMetric(svc *cloudwatch.CloudWatch, data AthenaResponse, cwNameSpace str
 			metric.Dimensions = append(metric.Dimensions, &cwD)
 		}
 
+		// add interval metric
+		metric.Dimensions = append(metric.Dimensions, &cloudwatch.Dimension{Name: aws.String("interval"), Value: aws.String(interval)})
+
+		// append to overall Metric Data
 		input.MetricData = append(input.MetricData, &metric)
 		i++
 	}
@@ -597,10 +613,10 @@ func main() {
 	}
 
 	// convert CUR
-	columns, s3Path, err := processCUR(sourceBucket, curReportName, curReportPath, curDestPath, destBucket)
-	if err != nil {
-		log.Fatal(err)
-	}
+	// columns, s3Path, err := processCUR(sourceBucket, curReportName, curReportPath, curDestPath, destBucket)
+	// if err != nil {
+	// 	log.Fatal(err)
+	// }
 
 	/// initialize AWS GO client
 	sess, err := session.NewSession(&aws.Config{Region: aws.String(region)})
@@ -613,15 +629,15 @@ func main() {
 	svcCW := cloudwatch.New(sess)
 
 	// make sure Athena DB exists - dont care about results
-	if _, err := sendQuery(svcAthena, "default", conf.Athena.DbSQL, region, account); err != nil {
-		log.Fatal(err)
-	}
+	// if _, err := sendQuery(svcAthena, "default", conf.Athena.DbSQL, region, account); err != nil {
+	// 	log.Fatal(err)
+	// }
 
 	date := time.Now().Format("200601")
 	// make sure current Athena table exists
-	if err := createAthenaTable(svcAthena, conf.Athena.DbName, conf.Athena.TableSQL, columns, s3Path, date, region, account); err != nil {
-		log.Fatal(err)
-	}
+	// if err := createAthenaTable(svcAthena, conf.Athena.DbName, conf.Athena.TableSQL, columns, s3Path, date, region, account); err != nil {
+	// 	log.Fatal(err)
+	// }
 
 	// If RI analysis enabled - do it
 	if conf.RI.Enabled {
@@ -632,11 +648,12 @@ func main() {
 
 	// struct for a query job
 	type job struct {
-		svc     *athena.Athena
-		db      string
-		account string
-		region  string
-		metric  Metric
+		svc      *athena.Athena
+		db       string
+		account  string
+		region   string
+		interval string
+		metric   Metric
 	}
 
 	// channels for parallel execution
@@ -652,14 +669,15 @@ func main() {
 					done <- true
 					return
 				}
-				results, err := sendQuery(j.svc, j.db, substituteParams(j.metric.SQL, map[string]string{"**DATE**": date}), j.region, j.account)
+
+				sql := substituteParams(j.metric.SQL, map[string]string{"**DBNAME**": conf.Athena.DbName, "**DATE**": date, "**INTERVAL**": conf.MetricConfig.Substring[j.interval]})
+				results, err := sendQuery(j.svc, j.db, sql, j.region, j.account)
 				if err != nil {
 					log.Println(err)
 					continue
 				}
-				continue // debugging for now
 
-				if err := sendMetric(svcCW, results, conf.General.Namespace, j.metric.CwName, j.metric.CwType, j.metric.CwDimension); err != nil {
+				if err := sendMetric(svcCW, results, conf.General.Namespace, j.metric.CwName, j.metric.CwType, j.metric.CwDimension, j.interval); err != nil {
 					log.Println(err)
 				}
 			}
@@ -669,7 +687,12 @@ func main() {
 	// pass every enabled metric into channel for processing
 	for metric := range conf.Metrics {
 		if conf.Metrics[metric].Enabled {
-			jobs <- job{svcAthena, conf.Athena.DbName, account, region, conf.Metrics[metric]}
+			if conf.Metrics[metric].Hourly {
+				jobs <- job{svcAthena, conf.Athena.DbName, account, region, "hourly", conf.Metrics[metric]}
+			}
+			if conf.Metrics[metric].Daily {
+				jobs <- job{svcAthena, conf.Athena.DbName, account, region, "daily", conf.Metrics[metric]}
+			}
 		}
 	}
 	close(jobs)
