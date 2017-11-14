@@ -1,12 +1,5 @@
 package main
 
-/*
-Imports of interest:
-  "github.com/BurntSushi/toml" - TOML parser
-  "flag" inbuilt package for commmand line parameter parsing
-  "github.com/mohae/deepcopy" package to copy any arbitary struct / map etc
-  "Numerous AWS packages" offical AWS SDK's
-*/
 import (
 	"errors"
 	"flag"
@@ -60,9 +53,10 @@ type Metric struct {
 }
 
 type Athena struct {
-	DbSQL    string `toml:"create_database"`
-	TableSQL string `toml:"create_table"`
-	DbName   string `toml:"database_name"`
+	DbSQL       string `toml:"create_database"`
+	TablePrefix string `toml:"table_prefix"`
+	TableSQL    string `toml:"create_table"`
+	DbName      string `toml:"database_name"`
 }
 
 type AthenaResponse struct {
@@ -584,14 +578,14 @@ func processCUR(sourceBucket string, reportName string, reportPath string, destP
 	return cols, "s3://" + destBucket + "/" + destPath + "/", nil
 }
 
-func createAthenaTable(svcAthena *athena.Athena, dbName string, sql string, columns []curconvert.CurColumn, s3Path string, date string, region string, account string) error {
+func createAthenaTable(svcAthena *athena.Athena, dbName string, tablePrefix string, sql string, columns []curconvert.CurColumn, s3Path string, date string, region string, account string) error {
 
 	var cols string
 	for col := range columns {
 		cols += "`" + columns[col].Name + "` " + columns[col].Type + ",\n"
 	}
 	cols = cols[:strings.LastIndex(cols, ",")]
-	sql = substituteParams(sql, map[string]string{"**DBNAME**": dbName, "**DATE**": date, "**COLUMNS**": cols, "**S3**": s3Path})
+	sql = substituteParams(sql, map[string]string{"**DBNAME**": dbName, "**PREFIX**": tablePrefix, "**DATE**": date, "**COLUMNS**": cols, "**S3**": s3Path})
 
 	if _, err := sendQuery(svcAthena, dbName, sql, region, account); err != nil {
 		return err
@@ -635,7 +629,7 @@ func main() {
 
 	date := time.Now().Format("200601")
 	// make sure current Athena table exists
-	if err := createAthenaTable(svcAthena, conf.Athena.DbName, conf.Athena.TableSQL, columns, s3Path, date, region, account); err != nil {
+	if err := createAthenaTable(svcAthena, conf.Athena.DbName, conf.Athena.TablePrefix, conf.Athena.TableSQL, columns, s3Path, date, region, account); err != nil {
 		log.Fatal(err)
 	}
 
