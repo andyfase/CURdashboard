@@ -215,7 +215,7 @@ func (c *CurConvert) initS3Downloader(bucket string, arn string, externalID stri
 	}
 
 	// Init Session
-	sess, err := session.NewSession(&aws.Config{Region: aws.String(bucketLocation)})
+	sess, err := session.NewSession(&aws.Config{Region: aws.String(bucketLocation), DisableRestProtocolURICleaning: aws.Bool(true)})
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +237,7 @@ func (c *CurConvert) initS3Uploader(bucket string, arn string, externalID string
 	}
 
 	// Init Session
-	sess, err := session.NewSession(&aws.Config{Region: aws.String(bucketLocation)})
+	sess, err := session.NewSession(&aws.Config{Region: aws.String(bucketLocation), DisableRestProtocolURICleaning: aws.Bool(true)})
 	if err != nil {
 		return nil, err
 	}
