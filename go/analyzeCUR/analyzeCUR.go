@@ -1,11 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"regexp"
 	"strconv"
@@ -18,6 +19,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/athena"
 	"github.com/aws/aws-sdk-go/service/cloudwatch"
+	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
+	"github.com/jcxplorer/cwlogger"
 )
 
 /*
@@ -82,6 +85,22 @@ End of configuraton structs
 var defaultConfigPath = "./analyzeCUR.config"
 var maxConcurrentQueries = 5
 
+func getInstanceMetadata() map[string]interface{} {
+	c := &http.Client{
+		Timeout: 100 * time.Millisecond,
+	}
+	resp, err := c.Get("http://169.254.169.254/latest/dynamic/instance-identity/document")
+	var m map[string]interface{}
+	if err != nil {
+		return m
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	// Unmrshall json, if it errors ignore and return empty map
+	_ = json.Unmarshal(body, &m)
+	return m
+}
+
 /*
 Function reads in and validates command line parameters
 */
@@ -105,17 +124,17 @@ func getParams(configFile *string, region *string, sourceBucket *string, destBuc
 	regexAccount := regexp.MustCompile(`^\d+$`)
 
 	if regexEmpty.MatchString(*sourceBucket) {
-		return errors.New("Must provide valid AWS DBR bucket")
+		return errors.New("Config Error: Must provide valid AWS DBR bucket")
 	}
 	if !regexRegion.MatchString(*region) {
-		return errors.New("Must provide valid AWS region")
+		return errors.New("Config Error: Must provide valid AWS region")
 	}
 
 	if !regexAccount.MatchString(*account) {
-		return errors.New("Must provide valid AWS account number")
+		return errors.New("Config Error: Must provide valid AWS account number")
 	}
 	if regexEmpty.MatchString(*curReportName) {
-		return errors.New("Must provide valid CUR Report Name")
+		return errors.New("Config Error: Must provide valid CUR Report Name")
 	}
 	if destBucket == nil || len(*destBucket) < 1 {
 		*destBucket = *sourceBucket
@@ -138,12 +157,12 @@ func getConfig(conf *Config, configFile string) error {
 	// read file
 	b, err := ioutil.ReadFile(configFile)
 	if err != nil {
-		return err
+		return errors.New("Error Reading TOML config file: " + err.Error())
 	}
 
 	// parse TOML config file into struct
 	if _, err := toml.Decode(string(b), &conf); err != nil {
-		return err
+		return errors.New("Error Decoding TOML config file: " + err.Error())
 	}
 
 	return nil
@@ -182,7 +201,7 @@ func sendQuery(svc *athena.Athena, db string, sql string, account string, region
 
 	result, err := svc.StartQueryExecution(&s)
 	if err != nil {
-		return results, err
+		return results, errors.New("Error Querying Athena, StartQueryExecution: " + err.Error())
 	}
 
 	var qri athena.GetQueryExecutionInput
@@ -194,8 +213,7 @@ func sendQuery(svc *athena.Athena, db string, sql string, account string, region
 	for {
 		qrop, err = svc.GetQueryExecution(&qri)
 		if err != nil {
-			fmt.Println(err)
-			return results, err
+			return results, errors.New("Error Querying Athena, GetQueryExecution: " + err.Error())
 		}
 		if *qrop.QueryExecution.Status.State != "RUNNING" {
 			break
@@ -204,7 +222,7 @@ func sendQuery(svc *athena.Athena, db string, sql string, account string, region
 	}
 
 	if *qrop.QueryExecution.Status.State != "SUCCEEDED" {
-		return results, errors.New(*qrop.QueryExecution.Status.State)
+		return results, errors.New("Error Querying Athena, completion state is NOT SUCCEEDED, state is: " + *qrop.QueryExecution.Status.State)
 	}
 
 	var ip athena.GetQueryResultsInput
@@ -235,7 +253,7 @@ func sendQuery(svc *athena.Athena, db string, sql string, account string, region
 			return true // keep going if there are more pages to fetch
 		})
 	if err != nil {
-		return results, err
+		return results, errors.New("Error Querying Athena, GetQueryResultsPages: " + err.Error())
 	}
 
 	return results, nil
@@ -259,7 +277,7 @@ func sendMetric(svc *cloudwatch.CloudWatch, data AthenaResponse, cwNameSpace str
 		if i >= 20 {
 			_, err := svc.PutMetricData(&input)
 			if err != nil {
-				return err
+				return errors.New("Could sending CW Metric: " + err.Error())
 			}
 			input.MetricData = nil
 			i = 0
@@ -311,7 +329,7 @@ func sendMetric(svc *cloudwatch.CloudWatch, data AthenaResponse, cwNameSpace str
 	if len(input.MetricData) > 0 {
 		_, err := svc.PutMetricData(&input)
 		if err != nil {
-			return err
+			return errors.New("Could sending CW Metric: " + err.Error())
 		}
 	}
 
@@ -567,12 +585,12 @@ func processCUR(sourceBucket string, reportName string, reportPath string, destP
 	cc := curconvert.NewCurConvert(sourceBucket, manifest, destBucket, destPath)
 	// Convert CUR
 	if err := cc.ConvertCur(); err != nil {
-		return nil, "", err
+		return nil, "", errors.New("Could not convert CUR: " + err.Error())
 	}
 
 	cols, err := cc.GetCURColumns()
 	if err != nil {
-		return nil, "", err
+		return nil, "", errors.New("Could not obtain CUR columns: " + err.Error())
 	}
 
 	return cols, "s3://" + destBucket + "/" + destPath + "/", nil
@@ -594,28 +612,58 @@ func createAthenaTable(svcAthena *athena.Athena, dbName string, tablePrefix stri
 	return nil
 }
 
+func doLog(logger *cwlogger.Logger, m string) {
+	if logger != nil {
+		logger.Log(time.Now(), m)
+	}
+	log.Println(m)
+}
+
 func main() {
 
-	var configFile, region, key, secret, account, sourceBucket, destBucket, curReportName, curReportPath, curDestPath string
-	if err := getParams(&configFile, &region, &sourceBucket, &destBucket, &account, &curReportName, &curReportPath, &curDestPath); err != nil {
-		log.Fatal(err)
+	// Grab instance meta-data
+	meta := getInstanceMetadata()
+
+	// Determine running region
+	mdregion, ec2 := meta["region"].(string)
+
+	/// initialize AWS GO client
+	sess, err := session.NewSession(&aws.Config{Region: aws.String(mdregion)})
+	if err != nil {
+		log.Println(err)
+		return
 	}
 
+	var logger *cwlogger.Logger
+	if ec2 { // Init Cloudwatch Logger class if were running on EC2
+		logger, err = cwlogger.New(&cwlogger.Config{
+			LogGroupName: "CURdashboard",
+			Client:       cloudwatchlogs.New(sess),
+		})
+		if err != nil {
+			log.Fatal("Could not initalize Cloudwatch logger: " + err.Error())
+		}
+		defer logger.Close()
+		logger.Log(time.Now(), "CURDasboard running on "+meta["instanceId"].(string)+" in "+meta["availabilityZone"].(string))
+	}
+
+	// read in command line params
+	var configFile, region, key, secret, account, sourceBucket, destBucket, curReportName, curReportPath, curDestPath string
+	if err := getParams(&configFile, &region, &sourceBucket, &destBucket, &account, &curReportName, &curReportPath, &curDestPath); err != nil {
+		doLog(logger, err.Error())
+		return
+	}
+
+	// read in config file
 	var conf Config
 	if err := getConfig(&conf, configFile); err != nil {
-		log.Fatal(err)
+		doLog(logger, err.Error())
 	}
 
 	// convert CUR
 	columns, s3Path, err := processCUR(sourceBucket, curReportName, curReportPath, curDestPath, destBucket)
 	if err != nil {
-		log.Fatal(err)
-	}
-
-	/// initialize AWS GO client
-	sess, err := session.NewSession(&aws.Config{Region: aws.String(region)})
-	if err != nil {
-		log.Fatal(err)
+		doLog(logger, err.Error())
 	}
 
 	// initialize Athena class
@@ -624,19 +672,19 @@ func main() {
 
 	// make sure Athena DB exists - dont care about results
 	if _, err := sendQuery(svcAthena, "default", conf.Athena.DbSQL, region, account); err != nil {
-		log.Fatal(err)
+		doLog(logger, "Could not create Athena Database: "+err.Error())
 	}
 
 	date := time.Now().Format("200601")
 	// make sure current Athena table exists
 	if err := createAthenaTable(svcAthena, conf.Athena.DbName, conf.Athena.TablePrefix, conf.Athena.TableSQL, columns, s3Path, date, region, account); err != nil {
-		log.Fatal(err)
+		doLog(logger, "Could not create Athena Table: "+err.Error())
 	}
 
 	// If RI analysis enabled - do it
 	if conf.RI.Enabled {
 		if err := riUtilization(sess, svcAthena, conf, key, secret, region, account, date); err != nil {
-			log.Fatal(err)
+			doLog(logger, err.Error())
 		}
 	}
 
@@ -667,12 +715,12 @@ func main() {
 				sql := substituteParams(j.metric.SQL, map[string]string{"**DBNAME**": conf.Athena.DbName, "**DATE**": date, "**INTERVAL**": conf.MetricConfig.Substring[j.interval]})
 				results, err := sendQuery(j.svc, j.db, sql, j.region, j.account)
 				if err != nil {
-					log.Println(err)
+					doLog(logger, "Error querying Athena, SQL: "+sql+" , Error: "+err.Error())
 					continue
 				}
 
 				if err := sendMetric(svcCW, results, conf.General.Namespace, j.metric.CwName, j.metric.CwType, j.metric.CwDimension, j.interval); err != nil {
-					log.Println(err)
+					doLog(logger, "Error sending metric, name: "+j.metric.CwName+" , Error: "+err.Error())
 				}
 			}
 		}()

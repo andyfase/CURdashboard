@@ -201,6 +201,21 @@ Resources:
                   - "*"
               - Effect: Allow
                 Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource:
+                  - "Fn::Join":
+                    - ""
+                    -
+                      - "arn:aws:logs:"
+                      - Ref: "AWS::Region"
+                      - ":"
+                      - Ref: "AWS::AccountId"
+                      - ":log-group:CURdashboard:*"
+              - Effect: Allow
+                Action:
                   - autoscaling:UpdateAutoScalingGroup
                 Resource: "*"
                 Condition:
