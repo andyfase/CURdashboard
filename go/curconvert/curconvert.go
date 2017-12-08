@@ -17,52 +17,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
-	"github.com/xitongsys/parquet-go/ParquetHandler"
+	"github.com/xitongsys/parquet-go/ParquetFile"
 	"github.com/xitongsys/parquet-go/Plugin/CSVWriter"
 )
-
-// Parquet Struct and functions
-type parquetFile struct {
-	filePath string
-	file     *os.File
-}
-
-func (pf *parquetFile) Create(name string) (ParquetHandler.ParquetFile, error) {
-	file, err := os.Create(name)
-	myFile := new(parquetFile)
-	myFile.file = file
-	return myFile, err
-
-}
-func (pf *parquetFile) Open(name string) (ParquetHandler.ParquetFile, error) {
-	var (
-		err error
-	)
-	if name == "" {
-		name = pf.filePath
-	}
-
-	myFile := new(parquetFile)
-	myFile.filePath = name
-	myFile.file, err = os.Open(name)
-	return myFile, err
-}
-
-func (pf *parquetFile) Seek(offset int, pos int) (int64, error) {
-	return pf.file.Seek(int64(offset), pos)
-}
-
-func (pf *parquetFile) Read(b []byte) (n int, err error) {
-	return pf.file.Read(b)
-}
-
-func (pf *parquetFile) Write(b []byte) (n int, err error) {
-	return pf.file.Write(b)
-}
-
-func (pf *parquetFile) Close() {
-	pf.file.Close()
-}
 
 //
 type CurColumn struct {
@@ -83,12 +40,12 @@ type CurConvert struct {
 	destArn          string
 	destExternalID   string
 
-	tempDir string
+	tempDir     string
+	concurrency int
 
 	CurColumns     []CSVWriter.MetadataType
 	CurFiles       []string
 	CurColumnTypes map[string]string
-	lowerColumns   bool
 	skipCols       map[int]bool
 }
 
@@ -102,7 +59,7 @@ func NewCurConvert(sBucket string, sObject string, dBucket string, dObject strin
 	cur.destObject = dObject
 
 	cur.tempDir = "/tmp"
-	cur.lowerColumns = true
+	cur.concurrency = 10
 
 	// over-ride CUR column types
 	cur.CurColumnTypes = make(map[string]string)
@@ -287,6 +244,7 @@ func (c *CurConvert) ParseCur() error {
 		t := cols[column].(map[string]interface{})
 		columnName := t["category"].(string) + "/" + t["name"].(string)
 		columnName = strings.Replace(columnName, ":", "_", -1)
+		columnName = strings.ToLower(columnName)
 
 		// We need to perform duplicate check and type check on lowercase'd column name (as all columns will become lowercase's when written)
 		columnNameLower := strings.ToLower(columnName)
@@ -377,22 +335,22 @@ func (c *CurConvert) ParquetCur(inputFile string) (string, error) {
 
 	// create local parquet file
 	localParquetFile := c.tempDir + "/" + inputFile[strings.LastIndex(inputFile, "/")+1:strings.Index(inputFile, ".")] + ".parquet"
-	var f ParquetHandler.ParquetFile
-	f = &parquetFile{}
-	f, err = f.Create(localParquetFile)
+	f, err := ParquetFile.NewLocalFileWriter(localParquetFile)
 	if err != nil {
 		return "", err
 	}
 
 	// init Parquet writer
-	ph := CSVWriter.NewCSVWriterHandler()
-	ph.WriteInit(c.CurColumns, f, 10, 30)
+	ph, err := CSVWriter.NewCSVWriter(c.CurColumns, f, int64(c.concurrency))
+	if err != nil {
+		return "", err
+	}
 
 	// read all remaining records of CSV file and write to parquet
 	i := 1
 	for {
 		if i%5000 == 0 {
-			ph.Flush()
+			ph.Flush(true)
 			i = 1
 		}
 
@@ -415,8 +373,7 @@ func (c *CurConvert) ParquetCur(inputFile string) (string, error) {
 		i++
 	}
 
-	ph.Flush()
-	ph.NameToLower()
+	ph.Flush(true)
 	ph.WriteStop()
 	f.Close()
 
