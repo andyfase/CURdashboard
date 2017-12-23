@@ -243,25 +243,36 @@ func (c *CurConvert) ParseCur() error {
 		i++
 		t := cols[column].(map[string]interface{})
 		columnName := t["category"].(string) + "/" + t["name"].(string)
-		columnName = strings.Replace(columnName, ":", "_", -1)
-		columnName = strings.ToLower(columnName)
 
-		// We need to perform duplicate check and type check on lowercase'd column name (as all columns will become lowercase's when written)
-		columnNameLower := strings.ToLower(columnName)
+		// convert columns names to allowed characters (lowercase) and substitute '_' for any non-allowed character
+		columnName = strings.ToLower(columnName)
+		r := func(r rune) rune {
+			switch {
+				case r >= 'a' && r <= 'z':
+					return r
+				case r >= '0' && r <= '9':
+					return r
+				case r == '/':
+					return r
+				default: 
+					return '_'
+			}
+		}
+		columnName = strings.Map(r, columnName)
 
 		// Skip duplicate columns
-		if _, ok := seen[columnNameLower]; ok {
+		if _, ok := seen[columnName]; ok {
 			c.skipCols[i] = true
 			continue
 		}
-		// Check for Type over-ride
-		colType, ok := c.CurColumnTypes[columnNameLower]
+		// Check for type over-ride
+		colType, ok := c.CurColumnTypes[columnName]
 		if !ok {
 			colType = "UTF8"
 		}
-		// Use columnName not columnNameLower as library requires uppercase fields to populate (which are lower-cased during writing via ph.NameToLower)
+
 		c.CurColumns = append(c.CurColumns, CSVWriter.MetadataType{Type: colType, Name: columnName})
-		seen[columnNameLower] = true
+		seen[columnName] = true
 	}
 
 	// Store CSV CUR files
@@ -362,11 +373,11 @@ func (c *CurConvert) ParquetCur(inputFile string) (string, error) {
 			return "", err
 		}
 
-		recParquet := make([]*string, len(rec))
-		for i := 0; i < len(rec); i++ {
-			_, skip := c.skipCols[i]
+		var recParquet []*string
+		for k, _ := range rec {
+			_, skip := c.skipCols[k]
 			if !skip {
-				recParquet[i] = &rec[i]
+				recParquet = append(recParquet, &rec[k])
 			}
 		}
 		ph.WriteString(recParquet)
