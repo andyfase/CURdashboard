@@ -17,6 +17,7 @@ import (
 	"github.com/andyfase/CURDashboard/go/curconvert"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/aws/aws-sdk-go/service/athena"
 	"github.com/aws/aws-sdk-go/service/cloudwatch"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
@@ -85,30 +86,43 @@ End of configuraton structs
 var defaultConfigPath = "./analyzeCUR.config"
 var maxConcurrentQueries = 5
 
-func getInstanceMetadata() map[string]interface{} {
+func getInstanceMetadata(sess *session.Session) map[string]interface{} {
 	c := &http.Client{
 		Timeout: 100 * time.Millisecond,
 	}
 	resp, err := c.Get("http://169.254.169.254/latest/dynamic/instance-identity/document")
 	var m map[string]interface{}
-	if err != nil {
-		return m
+	if err == nil {
+		defer resp.Body.Close()
+		body, err := ioutil.ReadAll(resp.Body)
+		if err == nil {
+			err = json.Unmarshal(body, &m)
+			if err != nil {
+				log.Fatalln("Could not parse MetaData, erorr: " + err.Error())
+			}
+		}
 	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	// Unmrshall json, if it errors ignore and return empty map
-	_ = json.Unmarshal(body, &m)
+	// if we havent obtained instance meta-data fetch account from STS - likely were not on EC2
+	_, ok := m["region"].(string)
+	if !ok {
+		svc := sts.New(sess)
+		result, err := svc.GetCallerIdentity(&sts.GetCallerIdentityInput{})
+		if err == nil {
+			m = make(map[string]interface{})
+			m["accountId"] = *result.Account
+			m["region"] = *sess.Config.Region
+		}
+	}
 	return m
 }
 
 /*
 Function reads in and validates command line parameters
 */
-func getParams(configFile *string, region *string, sourceBucket *string, destBucket *string, account *string, curReportName *string, curReportPath *string, curDestPath *string) error {
+func getParams(configFile *string, sourceBucket *string, destBucket *string, account *string, curReportName *string, curReportPath *string, curDestPath *string) error {
 
 	// Define input command line config parameter and parse it
 	flag.StringVar(configFile, "config", defaultConfigPath, "Input config file for analyzeDBR")
-	flag.StringVar(region, "region", "", "Athena Region")
 	flag.StringVar(sourceBucket, "bucket", "", "AWS Bucket where CUR files sit")
 	flag.StringVar(destBucket, "destbucket", "", "AWS Bucket where where Parquet files will be uploaded (Optional - use as override-only) ")
 	flag.StringVar(account, "account", "", "AWS Account #")
@@ -120,14 +134,10 @@ func getParams(configFile *string, region *string, sourceBucket *string, destBuc
 
 	// check input against defined regex's
 	regexEmpty := regexp.MustCompile(`^$`)
-	regexRegion := regexp.MustCompile(`^\w+-\w+-\d$`)
 	regexAccount := regexp.MustCompile(`^\d+$`)
 
 	if regexEmpty.MatchString(*sourceBucket) {
 		return errors.New("Config Error: Must provide valid AWS DBR bucket")
-	}
-	if !regexRegion.MatchString(*region) {
-		return errors.New("Config Error: Must provide valid AWS region")
 	}
 
 	if !regexAccount.MatchString(*account) {
@@ -235,15 +245,19 @@ func sendQuery(svc *athena.Athena, db string, sql string, account string, region
 			var colNames []string
 			for row := range page.ResultSet.Rows {
 				if i < 1 { // first row contains column names - which we use in any subsequent rows to produce map[columnname]values
-					for i := range page.ResultSet.Rows[row].Data {
-						colNames = append(colNames, *page.ResultSet.Rows[row].Data[i].VarCharValue)
+					for j := range page.ResultSet.Rows[row].Data {
+						colNames = append(colNames, *page.ResultSet.Rows[row].Data[j].VarCharValue)
 					}
 				} else {
 					result := make(map[string]string)
-					for i := range page.ResultSet.Rows[row].Data {
-						result[colNames[i]] = *page.ResultSet.Rows[row].Data[i].VarCharValue
+					for j := range page.ResultSet.Rows[row].Data {
+						if j < len(colNames)  {
+							result[colNames[j]] = *page.ResultSet.Rows[row].Data[j].VarCharValue
+						}
 					}
-					results.Rows = append(results.Rows, result)
+					if len(result) > 0 {
+						results.Rows = append(results.Rows, result)
+					}
 				}
 				i++
 			}
@@ -621,22 +635,20 @@ func doLog(logger *cwlogger.Logger, m string) {
 
 func main() {
 
-	// Grab instance meta-data
-	meta := getInstanceMetadata()
-
-	// Determine running region
-	mdregion, ec2 := meta["region"].(string)
-
 	/// initialize AWS GO client
-	sess, err := session.NewSession(&aws.Config{Region: aws.String(mdregion)})
-	if err != nil {
-		log.Println(err)
-		return
-	}
+	sess := session.Must(session.NewSessionWithOptions(session.Options{SharedConfigState: session.SharedConfigEnable}))
 
+	// Grab instance meta-data
+	meta := getInstanceMetadata(sess)
+
+	// re-init session now we have the region we are in
+	sess = sess.Copy(&aws.Config{Region: aws.String(meta["region"].(string))})
+
+	// Check if running on EC2
+	_, ec2 := meta["instanceId"].(string)
 	var logger *cwlogger.Logger
 	if ec2 { // Init Cloudwatch Logger class if were running on EC2
-		logger, err = cwlogger.New(&cwlogger.Config{
+		logger, err := cwlogger.New(&cwlogger.Config{
 			LogGroupName: "CURdashboard",
 			Client:       cloudwatchlogs.New(sess),
 		})
@@ -648,8 +660,8 @@ func main() {
 	}
 
 	// read in command line params
-	var configFile, region, key, secret, account, sourceBucket, destBucket, curReportName, curReportPath, curDestPath string
-	if err := getParams(&configFile, &region, &sourceBucket, &destBucket, &account, &curReportName, &curReportPath, &curDestPath); err != nil {
+	var configFile, key, secret, account, sourceBucket, destBucket, curReportName, curReportPath, curDestPath string
+	if err := getParams(&configFile, &sourceBucket, &destBucket, &account, &curReportName, &curReportPath, &curDestPath); err != nil {
 		doLog(logger, err.Error())
 		return
 	}
@@ -671,19 +683,19 @@ func main() {
 	svcCW := cloudwatch.New(sess)
 
 	// make sure Athena DB exists - dont care about results
-	if _, err := sendQuery(svcAthena, "default", conf.Athena.DbSQL, region, account); err != nil {
+	if _, err := sendQuery(svcAthena, "default", conf.Athena.DbSQL, meta["region"].(string), account); err != nil {
 		doLog(logger, "Could not create Athena Database: "+err.Error())
 	}
 
 	date := time.Now().Format("200601")
 	// make sure current Athena table exists
-	if err := createAthenaTable(svcAthena, conf.Athena.DbName, conf.Athena.TablePrefix, conf.Athena.TableSQL, columns, s3Path, date, region, account); err != nil {
+	if err := createAthenaTable(svcAthena, conf.Athena.DbName, conf.Athena.TablePrefix, conf.Athena.TableSQL, columns, s3Path, date, meta["region"].(string), account); err != nil {
 		doLog(logger, "Could not create Athena Table: "+err.Error())
 	}
 
 	// If RI analysis enabled - do it
 	if conf.RI.Enabled {
-		if err := riUtilization(sess, svcAthena, conf, key, secret, region, account, date); err != nil {
+		if err := riUtilization(sess, svcAthena, conf, key, secret, meta["region"].(string), account, date); err != nil {
 			doLog(logger, err.Error())
 		}
 	}
@@ -730,10 +742,10 @@ func main() {
 	for metric := range conf.Metrics {
 		if conf.Metrics[metric].Enabled {
 			if conf.Metrics[metric].Hourly {
-				jobs <- job{svcAthena, conf.Athena.DbName, account, region, "hourly", conf.Metrics[metric]}
+				jobs <- job{svcAthena, conf.Athena.DbName, account, meta["region"].(string), "hourly", conf.Metrics[metric]}
 			}
 			if conf.Metrics[metric].Daily {
-				jobs <- job{svcAthena, conf.Athena.DbName, account, region, "daily", conf.Metrics[metric]}
+				jobs <- job{svcAthena, conf.Athena.DbName, account, meta["region"].(string), "daily", conf.Metrics[metric]}
 			}
 		}
 	}
