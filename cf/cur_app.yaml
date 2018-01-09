@@ -285,8 +285,8 @@ Resources:
               - "## Execute analyzeCUR binary"
               - "Fn::If":
                 - NoUploadBucket
-                - "Fn::Sub": "chmod 755 ./bin/analyzeCUR && ./bin/analyzeCUR -bucket ${CURBucket} -reportname ${ReportName} -reportpath ${ReportPath} -account ${AWS::AccountId} -region ${AWS::Region}"
-                - "Fn::Sub": "chmod 755 ./bin/analyzeCUR && ./bin/analyzeCUR -bucket ${CURBucket} -reportname ${ReportName} -reportpath ${ReportPath} -account ${AWS::AccountId} -region ${AWS::Region} -destbucket ${CURUploadBucket}"
+                - "Fn::Sub": "chmod 755 ./bin/analyzeCUR && ./bin/analyzeCUR -bucket ${CURBucket} -reportname ${ReportName} -reportpath ${ReportPath} -account ${AWS::AccountId}"
+                - "Fn::Sub": "chmod 755 ./bin/analyzeCUR && ./bin/analyzeCUR -bucket ${CURBucket} -reportname ${ReportName} -reportpath ${ReportPath} -account ${AWS::AccountId} -destbucket ${CURUploadBucket}"
               - "##  Self terminate running instance"
               - "instance=`curl -s http://169.254.169.254/latest/meta-data/instance-id`"
               - "Fn::Sub": "group=`aws autoscaling describe-auto-scaling-instances --instance-ids $instance --region ${AWS::Region} --query AutoScalingInstances[0].AutoScalingGroupName --output text`"
