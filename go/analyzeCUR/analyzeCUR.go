@@ -17,10 +17,10 @@ import (
 	"github.com/andyfase/CURDashboard/go/curconvert"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/aws/aws-sdk-go/service/athena"
 	"github.com/aws/aws-sdk-go/service/cloudwatch"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/jcxplorer/cwlogger"
 )
 
@@ -239,27 +239,30 @@ func sendQuery(svc *athena.Athena, db string, sql string, account string, region
 	ip.SetQueryExecutionId(*result.QueryExecutionId)
 
 	// loop through results (paginated call)
+	var colNames []string
 	err = svc.GetQueryResultsPages(&ip,
 		func(page *athena.GetQueryResultsOutput, lastPage bool) bool {
-			i := 0
-			var colNames []string
 			for row := range page.ResultSet.Rows {
-				if i < 1 { // first row contains column names - which we use in any subsequent rows to produce map[columnname]values
+				if len(colNames) < 1 { // first row contains column names - which we use in any subsequent rows to produce map[columnname]values
 					for j := range page.ResultSet.Rows[row].Data {
 						colNames = append(colNames, *page.ResultSet.Rows[row].Data[j].VarCharValue)
 					}
 				} else {
 					result := make(map[string]string)
+					skip := false
 					for j := range page.ResultSet.Rows[row].Data {
-						if j < len(colNames)  {
+						if j < len(colNames) {
+							if page.ResultSet.Rows[row].Data[j].VarCharValue == nil {
+								skip = true
+								break
+							}
 							result[colNames[j]] = *page.ResultSet.Rows[row].Data[j].VarCharValue
 						}
 					}
-					if len(result) > 0 {
+					if len(result) > 0 && !skip {
 						results.Rows = append(results.Rows, result)
 					}
 				}
-				i++
 			}
 			if lastPage {
 				return false // return false to end paginated calls
@@ -660,7 +663,7 @@ func main() {
 	}
 
 	// read in command line params
-	var configFile, key, secret, account, sourceBucket, destBucket, curReportName, curReportPath, curDestPath string
+	var configFile, account, sourceBucket, destBucket, curReportName, curReportPath, curDestPath string
 	if err := getParams(&configFile, &sourceBucket, &destBucket, &account, &curReportName, &curReportPath, &curDestPath); err != nil {
 		doLog(logger, err.Error())
 		return
@@ -693,12 +696,12 @@ func main() {
 		doLog(logger, "Could not create Athena Table: "+err.Error())
 	}
 
-	// If RI analysis enabled - do it
-	if conf.RI.Enabled {
-		if err := riUtilization(sess, svcAthena, conf, key, secret, meta["region"].(string), account, date); err != nil {
-			doLog(logger, err.Error())
-		}
-	}
+	// // If RI analysis enabled - do it
+	// if conf.RI.Enabled {
+	// 	if err := riUtilization(sess, svcAthena, conf, key, secret, meta["region"].(string), account, date); err != nil {
+	// 		doLog(logger, err.Error())
+	// 	}
+	// }
 
 	// struct for a query job
 	type job struct {
