@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -224,14 +225,14 @@ func (c *CurConvert) ParseCur() error {
 		Key:    aws.String(c.sourceObject),
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to download manifest, bucket: %s, object: %s, error: %s", c.sourceBucket, c.sourceObject, err.Error())
 	}
 
 	// Unmarshall JSON
 	var j map[string]interface{}
 	err = json.Unmarshal(buff.Bytes(), &j)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to parse manifest, bucket: %s, object: %s, error: %s", c.sourceBucket, c.sourceObject, err.Error())
 	}
 
 	// Store all column names from manifests
@@ -248,14 +249,14 @@ func (c *CurConvert) ParseCur() error {
 		columnName = strings.ToLower(columnName)
 		r := func(r rune) rune {
 			switch {
-				case r >= 'a' && r <= 'z':
-					return r
-				case r >= '0' && r <= '9':
-					return r
-				case r == '/':
-					return r
-				default: 
-					return '_'
+			case r >= 'a' && r <= 'z':
+				return r
+			case r >= '0' && r <= '9':
+				return r
+			case r == '/':
+				return r
+			default:
+				return '_'
 			}
 		}
 		columnName = strings.Map(r, columnName)
@@ -311,7 +312,7 @@ func (c *CurConvert) DownloadCur(curObject string) (string, error) {
 		})
 
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to download CUR object, bucket: %s, object: %s, error: %s", c.sourceBucket, curObject, err.Error())
 	}
 
 	return localFile, nil
@@ -348,7 +349,7 @@ func (c *CurConvert) ParquetCur(inputFile string) (string, error) {
 	localParquetFile := c.tempDir + "/" + inputFile[strings.LastIndex(inputFile, "/")+1:strings.Index(inputFile, ".")] + ".parquet"
 	f, err := ParquetFile.NewLocalFileWriter(localParquetFile)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to create parquet file %s, error: %s", localParquetFile, err.Error())
 	}
 
 	// init Parquet writer
@@ -418,7 +419,7 @@ func (c *CurConvert) UploadCur(parquetFile string) error {
 	})
 
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to upload CUR parquet object, bucket: %s, object: %s, error: %s", c.destBucket, uploadFile, err.Error())
 	}
 
 	return nil
@@ -429,7 +430,7 @@ func (c *CurConvert) UploadCur(parquetFile string) error {
 func (c *CurConvert) ConvertCur() error {
 
 	if err := c.ParseCur(); err != nil {
-		return err
+		return fmt.Errorf("Error Parsing CUR Manifest: %s", err.Error)
 	}
 
 	result := make(chan error)
@@ -438,18 +439,18 @@ func (c *CurConvert) ConvertCur() error {
 		go func(object string) {
 			gzipFile, err := c.DownloadCur(object)
 			if err != nil {
-				result <- err
+				result <- fmt.Errorf("Error Downloading CUR: %s", err.Error)
 				return
 			}
 
 			parquetFile, err := c.ParquetCur(gzipFile)
 			if err != nil {
-				result <- err
+				result <- fmt.Errorf("Error Converting CUR: %s", err.Error)
 				return
 			}
 
 			if err := c.UploadCur(parquetFile); err != nil {
-				result <- err
+				result <- fmt.Errorf("Error Uploading CUR: %s", err.Error)
 				return
 			}
 
