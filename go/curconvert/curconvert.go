@@ -430,7 +430,7 @@ func (c *CurConvert) UploadCur(parquetFile string) error {
 func (c *CurConvert) ConvertCur() error {
 
 	if err := c.ParseCur(); err != nil {
-		return fmt.Errorf("Error Parsing CUR Manifest: %s", err.Error)
+		return fmt.Errorf("Error Parsing CUR Manifest: %s", err.Error())
 	}
 
 	result := make(chan error)
@@ -439,18 +439,18 @@ func (c *CurConvert) ConvertCur() error {
 		go func(object string) {
 			gzipFile, err := c.DownloadCur(object)
 			if err != nil {
-				result <- fmt.Errorf("Error Downloading CUR: %s", err.Error)
+				result <- fmt.Errorf("Error Downloading CUR: %s", err.Error())
 				return
 			}
 
 			parquetFile, err := c.ParquetCur(gzipFile)
 			if err != nil {
-				result <- fmt.Errorf("Error Converting CUR: %s", err.Error)
+				result <- fmt.Errorf("Error Converting CUR: %s", err.Error())
 				return
 			}
 
 			if err := c.UploadCur(parquetFile); err != nil {
-				result <- fmt.Errorf("Error Uploading CUR: %s", err.Error)
+				result <- fmt.Errorf("Error Uploading CUR: %s", err.Error())
 				return
 			}
 
