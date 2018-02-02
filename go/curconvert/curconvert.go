@@ -104,6 +104,26 @@ func (c *CurConvert) SetDestRole(arn string, externalID string) error {
 }
 
 //
+// SetCURManifest - configures the source manifest object for retrieving CUR from different AWS account
+func (c *CurConvert) SetSourceManifest(manifest string) error {
+	if len(manifest) < 1 {
+		return errors.New("Must supply a Manifest")
+	}
+	c.sourceObject = manifest
+	return nil
+}
+
+//
+// SetDestPath - configures the dest pat for the converted CUR
+func (c *CurConvert) SetDestPath(path string) error {
+	if len(path) < 1 {
+		return errors.New("Must supply a Path")
+	}
+	c.destObject = path
+	return nil
+}
+
+//
 // GetCURColumns - Converts processed CUR columns into map and returns it
 func (c *CurConvert) GetCURColumns() ([]CurColumn, error) {
 
@@ -206,6 +226,37 @@ func (c *CurConvert) initS3Uploader(bucket string, arn string, externalID string
 	}
 
 	return s3manager.NewUploader(sess), nil
+}
+
+//
+// CheckCURExists - Attempts to fetch manifest file to confirm existence of CUR
+func (c *CurConvert) CheckCURExists() error {
+
+	// get location of bucket
+	bucketLocation, err := c.getBucketLocation(c.sourceBucket, c.sourceArn, c.sourceExternalID)
+	if err != nil {
+		return err
+	}
+
+	// Init Session
+	sess, err := session.NewSession(&aws.Config{Region: aws.String(bucketLocation)})
+	if err != nil {
+		return err
+	}
+
+	// if needed set creds for AssumeRole and reset session
+	if len(c.sourceArn) > 0 {
+		sess = sess.Copy(&aws.Config{Credentials: c.getCreds(c.sourceArn, c.sourceExternalID, sess)})
+	}
+
+	svc := s3.New(sess)
+	_, err = svc.GetObject(
+		&s3.GetObjectInput{
+			Bucket: aws.String(c.sourceBucket),
+			Key:    aws.String(c.sourceObject),
+		})
+
+	return err
 }
 
 //
