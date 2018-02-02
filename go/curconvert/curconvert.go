@@ -239,7 +239,7 @@ func (c *CurConvert) CheckCURExists() error {
 	}
 
 	// Init Session
-	sess, err := session.NewSession(&aws.Config{Region: aws.String(bucketLocation)})
+	sess, err := session.NewSession(&aws.Config{Region: aws.String(bucketLocation), DisableRestProtocolURICleaning: aws.Bool(true)})
 	if err != nil {
 		return err
 	}
