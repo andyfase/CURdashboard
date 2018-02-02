@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -16,10 +17,12 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/andyfase/CURDashboard/go/curconvert"
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/athena"
 	"github.com/aws/aws-sdk-go/service/cloudwatch"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/jcxplorer/cwlogger"
 )
@@ -581,36 +584,65 @@ func riUtilization(sess *session.Session, svcAthena *athena.Athena, conf Config,
 	return nil
 }
 
-func processCUR(sourceBucket string, reportName string, reportPath string, destPath string, destBucket string) ([]curconvert.CurColumn, string, error) {
+func processCUR(sourceBucket string, reportName string, reportPath string, destPath string, destBucket string, logger *cwlogger.Logger) ([]curconvert.CurColumn, string, string, error) {
 
-	// Generate CUR Date Format which is YYYYMM01-YYYYMM01
-	start := time.Now()
-	end := start.AddDate(0, 1, 0)
-	curDate := start.Format("200601") + "01-" + end.Format("200601") + "01"
+	t1 := time.Now()
+	t1First := time.Date(t1.Year(), t1.Month(), 1, 0, 0, 0, 0, time.Local)
 
-	// Set defined format for CUR manifest
+	t2 := t1First.AddDate(0, 1, 0)
+	t2First := time.Date(t2.Year(), t2.Month(), 1, 0, 0, 0, 0, time.Local)
+
+	curDate := fmt.Sprintf("%d%02d01-%d%02d01", t1First.Year(), t1First.Month(), t2First.Year(), t2First.Month())
 	manifest := reportPath + "/" + curDate + "/" + reportName + "-Manifest.json"
 
 	// Set or extend destPath
+	destPathDate := fmt.Sprintf("%d%02d", t1First.Year(), t1First.Month())
+	var destPathFull string
 	if len(destPath) < 1 {
-		destPath = "parquet-cur/" + start.Format("200601")
+		destPathFull = "parquet-cur/" + destPathDate
 	} else {
-		destPath += "/" + start.Format("200601")
+		destPathFull = destPath + "/" + destPathDate
 	}
 
 	// Init CUR Converter
-	cc := curconvert.NewCurConvert(sourceBucket, manifest, destBucket, destPath)
+	cc := curconvert.NewCurConvert(sourceBucket, manifest, destBucket, destPathFull)
+
+	// Check current months manifest exists
+	if err := cc.CheckCURExists(); err != nil {
+		if err.(awserr.Error).Code() != s3.ErrCodeNoSuchKey {
+			return nil, "", "", errors.New("Error fetching CUR Manifest: " + err.Error())
+		}
+		if t1.Day() > 3 {
+			return nil, "", "", errors.New("Error fetching CUR Manifest, NoSuchKey and too delayed: " + err.Error())
+		}
+		// Regress to processing last months CUR. Error is ErrCodeNoSuchKey and still early in the month
+		doLog(logger, "Reseting to previous months CUR for "+reportName)
+		t1First = t1First.AddDate(0, 0, -1)
+		t2First = t2First.AddDate(0, 0, -1)
+		curDate = fmt.Sprintf("%d%02d01-%d%02d01", t1First.Year(), t1First.Month(), t2First.Year(), t2First.Month())
+		destPathDate = fmt.Sprintf("%d%02d", t1First.Year(), t1First.Month())
+
+		manifest := reportPath + "/" + curDate + "/" + reportName + "-Manifest.json"
+		cc.SetSourceManifest(manifest)
+
+		if len(destPath) < 1 {
+			destPathFull = "parquet-cur/" + destPathDate
+		} else {
+			destPathFull = destPath + "/" + destPathDate
+		}
+		cc.SetDestPath(destPathFull)
+	}
+
 	// Convert CUR
 	if err := cc.ConvertCur(); err != nil {
-		return nil, "", errors.New("Could not convert CUR: " + err.Error())
+		return nil, "", "", errors.New("Could not convert CUR: " + err.Error())
 	}
 
 	cols, err := cc.GetCURColumns()
 	if err != nil {
-		return nil, "", errors.New("Could not obtain CUR columns: " + err.Error())
+		return nil, "", "", errors.New("Could not obtain CUR columns: " + err.Error())
 	}
-
-	return cols, "s3://" + destBucket + "/" + destPath + "/", nil
+	return cols, "s3://" + destBucket + "/" + destPathFull + "/", destPathDate, nil
 }
 
 func createAthenaTable(svcAthena *athena.Athena, dbName string, tablePrefix string, sql string, columns []curconvert.CurColumn, s3Path string, date string, region string, account string) error {
@@ -621,7 +653,6 @@ func createAthenaTable(svcAthena *athena.Athena, dbName string, tablePrefix stri
 	}
 	cols = cols[:strings.LastIndex(cols, ",")]
 	sql = substituteParams(sql, map[string]string{"**DBNAME**": dbName, "**PREFIX**": tablePrefix, "**DATE**": date, "**COLUMNS**": cols, "**S3**": s3Path})
-
 	if _, err := sendQuery(svcAthena, dbName, sql, region, account); err != nil {
 		return err
 	}
@@ -676,7 +707,7 @@ func main() {
 	}
 
 	// convert CUR
-	columns, s3Path, err := processCUR(sourceBucket, curReportName, curReportPath, curDestPath, destBucket)
+	columns, s3Path, curDate, err := processCUR(sourceBucket, curReportName, curReportPath, curDestPath, destBucket, logger)
 	if err != nil {
 		doLog(logger, err.Error())
 	}
@@ -690,12 +721,12 @@ func main() {
 		doLog(logger, "Could not create Athena Database: "+err.Error())
 	}
 
-	date := time.Now().Format("200601")
 	// make sure current Athena table exists
-	if err := createAthenaTable(svcAthena, conf.Athena.DbName, conf.Athena.TablePrefix, conf.Athena.TableSQL, columns, s3Path, date, meta["region"].(string), account); err != nil {
+	if err := createAthenaTable(svcAthena, conf.Athena.DbName, conf.Athena.TablePrefix, conf.Athena.TableSQL, columns, s3Path, curDate, meta["region"].(string), account); err != nil {
 		doLog(logger, "Could not create Athena Table: "+err.Error())
 	}
 
+	return
 	// // If RI analysis enabled - do it
 	// if conf.RI.Enabled {
 	// 	if err := riUtilization(sess, svcAthena, conf, key, secret, meta["region"].(string), account, date); err != nil {
@@ -727,7 +758,7 @@ func main() {
 					return
 				}
 
-				sql := substituteParams(j.metric.SQL, map[string]string{"**DBNAME**": conf.Athena.DbName, "**DATE**": date, "**INTERVAL**": conf.MetricConfig.Substring[j.interval]})
+				sql := substituteParams(j.metric.SQL, map[string]string{"**DBNAME**": conf.Athena.DbName, "**DATE**": curDate, "**INTERVAL**": conf.MetricConfig.Substring[j.interval]})
 				results, err := sendQuery(j.svc, j.db, sql, j.region, j.account)
 				if err != nil {
 					doLog(logger, "Error querying Athena, SQL: "+sql+" , Error: "+err.Error())
