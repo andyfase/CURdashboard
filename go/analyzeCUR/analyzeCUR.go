@@ -122,7 +122,7 @@ func getInstanceMetadata(sess *session.Session) map[string]interface{} {
 /*
 Function reads in and validates command line parameters
 */
-func getParams(configFile *string, sourceBucket *string, destBucket *string, account *string, curReportName *string, curReportPath *string, curDestPath *string) error {
+func getParams(configFile *string, sourceBucket *string, destBucket *string, account *string, curReportName *string, curReportPath *string, curDestPath *string, dateOverride *string) error {
 
 	// Define input command line config parameter and parse it
 	flag.StringVar(configFile, "config", defaultConfigPath, "Input config file for analyzeDBR")
@@ -132,6 +132,7 @@ func getParams(configFile *string, sourceBucket *string, destBucket *string, acc
 	flag.StringVar(curReportName, "reportname", "", "CUR Report Name")
 	flag.StringVar(curReportPath, "reportpath", "", "CUR Report PAth")
 	flag.StringVar(curDestPath, "destpath", "", "Destination Path for converted CUR to be uploaded too")
+	flag.StringVar(dateOverride, "date", "", "Optional date flag to over-ride the processing CUR month")
 
 	flag.Parse()
 
@@ -584,9 +585,19 @@ func riUtilization(sess *session.Session, svcAthena *athena.Athena, conf Config,
 	return nil
 }
 
-func processCUR(sourceBucket string, reportName string, reportPath string, destPath string, destBucket string, logger *cwlogger.Logger) ([]curconvert.CurColumn, string, string, error) {
+func processCUR(sourceBucket string, reportName string, reportPath string, destPath string, destBucket string, logger *cwlogger.Logger, dateOverride string) ([]curconvert.CurColumn, string, string, error) {
 
-	t1 := time.Now()
+	var t1 time.Time
+	var err error
+	if len(dateOverride) == 8 {
+		t1, err = time.Parse("20060102", dateOverride)
+		if err != nil {
+			return nil, "", "", errors.New("Could not parse given date ovrride: " + dateOverride + ", " + err.Error())
+		}
+	} else {
+		t1 = time.Now()
+	}
+
 	t1First := time.Date(t1.Year(), t1.Month(), 1, 0, 0, 0, 0, time.Local)
 
 	t2 := t1First.AddDate(0, 1, 0)
@@ -694,8 +705,8 @@ func main() {
 	}
 
 	// read in command line params
-	var configFile, account, sourceBucket, destBucket, curReportName, curReportPath, curDestPath string
-	if err := getParams(&configFile, &sourceBucket, &destBucket, &account, &curReportName, &curReportPath, &curDestPath); err != nil {
+	var configFile, account, sourceBucket, destBucket, curReportName, curReportPath, curDestPath, dateOverride string
+	if err := getParams(&configFile, &sourceBucket, &destBucket, &account, &curReportName, &curReportPath, &curDestPath, &dateOverride); err != nil {
 		doLog(logger, err.Error())
 		return
 	}
@@ -707,7 +718,7 @@ func main() {
 	}
 
 	// convert CUR
-	columns, s3Path, curDate, err := processCUR(sourceBucket, curReportName, curReportPath, curDestPath, destBucket, logger)
+	columns, s3Path, curDate, err := processCUR(sourceBucket, curReportName, curReportPath, curDestPath, destBucket, logger, dateOverride)
 	if err != nil {
 		doLog(logger, err.Error())
 	}
