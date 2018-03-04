@@ -46,6 +46,7 @@ type CurConvert struct {
 
 	CurColumns     []CSVWriter.MetadataType
 	CurFiles       []string
+	CurParqetFiles map[string]bool
 	CurColumnTypes map[string]string
 	skipCols       map[int]bool
 }
@@ -77,6 +78,9 @@ func NewCurConvert(sBucket string, sObject string, dBucket string, dObject strin
 	cur.CurColumnTypes["reservation/totalreservednormalizedunits"] = "DOUBLE"
 	cur.CurColumnTypes["reservation/totalreservedunits"] = "DOUBLE"
 	cur.CurColumnTypes["reservation/unitsperreservation"] = "DOUBLE"
+
+	// init parquet file map
+	cur.CurParqetFiles = make(map[string]bool)
 
 	return cur
 }
@@ -473,6 +477,53 @@ func (c *CurConvert) UploadCur(parquetFile string) error {
 		return fmt.Errorf("failed to upload CUR parquet object, bucket: %s, object: %s, error: %s", c.destBucket, uploadFile, err.Error())
 	}
 
+	c.CurParqetFiles[uploadFile] = true
+	return nil
+}
+
+//
+// CleanCUr
+func (c *CurConvert) CleanCur() error {
+
+	// init S3 manager
+	s3up, err := c.initS3Uploader(c.destBucket, c.destArn, c.destExternalID)
+	if err != nil {
+		return err
+	}
+
+	// List all objects in current parquet destination path
+	result, err := s3up.S3.ListObjectsV2(
+		&s3.ListObjectsV2Input{
+			Bucket:  aws.String(c.destBucket),
+			Prefix:  aws.String(c.destObject + "/"),
+			MaxKeys: aws.Int64(500),
+		})
+	if err != nil {
+		return fmt.Errorf("Error listing oject list when cleaning CUR: %s", err.Error())
+	}
+
+	// Build delete list of all objects not in c.CurParqetFiles map i.e. have not been uploaded on this conversion.
+	var deleteObjects []s3manager.BatchDeleteObject
+	for object := range result.Contents {
+		_, ok := c.CurParqetFiles[*result.Contents[object].Key]
+		if !ok {
+			deleteObjects = append(deleteObjects, s3manager.BatchDeleteObject{
+				Object: &s3.DeleteObjectInput{
+					Key:    aws.String(*result.Contents[object].Key),
+					Bucket: aws.String(c.destBucket),
+				},
+			})
+		}
+	}
+
+	// Proccess object delection / cleanup
+	batcher := s3manager.NewBatchDeleteWithClient(s3up.S3)
+	err = batcher.Delete(aws.BackgroundContext(), &s3manager.DeleteObjectsIterator{
+		Objects: deleteObjects,
+	})
+	if err != nil {
+		return fmt.Errorf("Error deleting objects when cleaning CUR: %s", err.Error())
+	}
 	return nil
 }
 
@@ -520,5 +571,5 @@ func (c *CurConvert) ConvertCur() error {
 		}
 	}
 
-	return nil
+	return c.CleanCur()
 }
