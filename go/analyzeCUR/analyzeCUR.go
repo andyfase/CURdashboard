@@ -737,7 +737,6 @@ func main() {
 		doLog(logger, "Could not create Athena Table: "+err.Error())
 	}
 
-	return
 	// // If RI analysis enabled - do it
 	// if conf.RI.Enabled {
 	// 	if err := riUtilization(sess, svcAthena, conf, key, secret, meta["region"].(string), account, date); err != nil {
