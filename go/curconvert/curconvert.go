@@ -430,7 +430,7 @@ func (c *CurConvert) ParquetCur(inputFile string) (string, error) {
 		}
 
 		var recParquet []*string
-		for k, _ := range rec {
+		for k := range rec {
 			_, skip := c.skipCols[k]
 			if !skip {
 				recParquet = append(recParquet, &rec[k])
@@ -440,7 +440,9 @@ func (c *CurConvert) ParquetCur(inputFile string) (string, error) {
 		i++
 	}
 
-	ph.Flush(true)
+	if i > 1 {
+		ph.Flush(true)
+	}
 	ph.WriteStop()
 	f.Close()
 
