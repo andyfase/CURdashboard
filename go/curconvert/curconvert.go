@@ -19,7 +19,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/xitongsys/parquet-go/ParquetFile"
-	"github.com/xitongsys/parquet-go/Plugin/CSVWriter"
+	"github.com/xitongsys/parquet-go/ParquetWriter"
+	"github.com/xitongsys/parquet-go/SchemaHandler"
 )
 
 //
@@ -44,7 +45,7 @@ type CurConvert struct {
 	tempDir     string
 	concurrency int
 
-	CurColumns     []CSVWriter.MetadataType
+	CurColumns     []string
 	CurFiles       []string
 	CurParqetFiles map[string]bool
 	CurColumnTypes map[string]string
@@ -131,18 +132,32 @@ func (c *CurConvert) SetDestPath(path string) error {
 // GetCURColumns - Converts processed CUR columns into map and returns it
 func (c *CurConvert) GetCURColumns() ([]CurColumn, error) {
 
-	if c.CurColumns == nil || len(c.CurColumns) < 1 {
-		return nil, errors.New("cannot fetch CUR column data, call ParseCUR first")
+	if len(c.CurColumns) < 1 {
+		return nil, errors.New("Cannot fetch CUR column data, call ParseCUR first")
 	}
 
+	sh := SchemaHandler.NewSchemaHandlerFromMetadata(c.CurColumns)
 	cols := []CurColumn{}
-	for i := 0; i < len(c.CurColumns); i++ {
-		if c.CurColumns[i].Type == "UTF8" {
-			c.CurColumns[i].Type = "STRING"
-		}
-		cols = append(cols, CurColumn{Name: c.CurColumns[i].Name, Type: c.CurColumns[i].Type})
-	}
 
+	for i := range sh.SchemaElements {
+		if sh.SchemaElements[i].Type == nil {
+			continue
+		}
+
+		var t string
+		if sh.SchemaElements[i].ConvertedType != nil {
+			t = sh.SchemaElements[i].ConvertedType.String()
+		} else if sh.SchemaElements[i].Type != nil {
+			t = sh.SchemaElements[i].Type.String()
+		} else {
+			return nil, errors.New("Cannot fetch CUR column data, Failed to find Type for CurColumn")
+		}
+
+		if t == "UTF8" {
+			t = "STRING"
+		}
+		cols = append(cols, CurColumn{Name: sh.SchemaElements[i].GetName(), Type: t})
+	}
 	return cols, nil
 }
 
@@ -322,12 +337,14 @@ func (c *CurConvert) ParseCur() error {
 			continue
 		}
 		// Check for type over-ride
+		encoding := ""
 		colType, ok := c.CurColumnTypes[columnName]
 		if !ok {
 			colType = "UTF8"
+			encoding = ", encoding=PLAIN_DICTIONARY"
 		}
 
-		c.CurColumns = append(c.CurColumns, CSVWriter.MetadataType{Type: colType, Name: columnName})
+		c.CurColumns = append(c.CurColumns, "name="+columnName+", type="+colType+encoding)
 		seen[columnName] = true
 	}
 
@@ -408,7 +425,7 @@ func (c *CurConvert) ParquetCur(inputFile string) (string, error) {
 	}
 
 	// init Parquet writer
-	ph, err := CSVWriter.NewCSVWriter(c.CurColumns, f, int64(c.concurrency))
+	ph, err := ParquetWriter.NewCSVWriter(c.CurColumns, f, int64(c.concurrency))
 	if err != nil {
 		return "", err
 	}
