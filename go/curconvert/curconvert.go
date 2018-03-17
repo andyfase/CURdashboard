@@ -337,14 +337,12 @@ func (c *CurConvert) ParseCur() error {
 			continue
 		}
 		// Check for type over-ride
-		encoding := ""
 		colType, ok := c.CurColumnTypes[columnName]
 		if !ok {
 			colType = "UTF8"
-			encoding = ", encoding=PLAIN_DICTIONARY"
 		}
 
-		c.CurColumns = append(c.CurColumns, "name="+columnName+", type="+colType+encoding)
+		c.CurColumns = append(c.CurColumns, "name="+columnName+", type="+colType+", encoding=PLAIN_DICTIONARY")
 		seen[columnName] = true
 	}
 
