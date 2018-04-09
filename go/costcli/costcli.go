@@ -76,13 +76,22 @@ func getConfig(conf *Config, configFile string) error {
 	return nil
 }
 
-func getCreds(arn string, externalID string, sess *session.Session) *credentials.Credentials {
+func getCreds(arn string, externalID string, mfa string, sess *session.Session) *credentials.Credentials {
 	if len(arn) < 1 {
 		return nil
 	}
+	if len(mfa) > 0 {
+		return stscreds.NewCredentials(sess, arn, func(p *stscreds.AssumeRoleProvider) {
+			p.SerialNumber = aws.String(mfa)
+			p.TokenProvider = stscreds.StdinTokenProvider
+			if len(externalID) > 0 {
+				p.ExternalID = aws.String(externalID)
+			}
+		})
+	}
 	if len(externalID) > 0 {
 		return stscreds.NewCredentials(sess, arn, func(p *stscreds.AssumeRoleProvider) {
-			p.ExternalID = &externalID
+			p.ExternalID = aws.String(externalID)
 		})
 	}
 	return stscreds.NewCredentials(sess, arn, func(p *stscreds.AssumeRoleProvider) {})
@@ -281,7 +290,7 @@ func main() {
 	app.Usage = "Command Line Interface for download, conversion and re-upload of the AWS CUR from/to a S3 Bucket."
 	app.Version = "1.0.0"
 
-	var startDate, endDate, database, table, region, roleArn, externalID, configFile, s3ResultsLocation string
+	var startDate, endDate, database, table, region, roleArn, externalID, configFile, s3ResultsLocation, mfa string
 	app.Commands = []cli.Command{
 		{
 			Name:  "costbytag",
@@ -310,6 +319,12 @@ func main() {
 					Usage:       "Athena Table to use",
 					Value:       "",
 					Destination: &table,
+				},
+				cli.StringFlag{
+					Name:        "mfaSerial, mfa",
+					Usage:       "Optional MFA Serial or ARN",
+					Value:       "",
+					Destination: &mfa,
 				},
 				cli.StringFlag{
 					Name:        "resultsLocation, rl",
@@ -357,7 +372,6 @@ func main() {
 				conf.Database = database
 				conf.Table = table
 
-				// Init Session
 				sess, err := session.NewSession(&aws.Config{Region: aws.String(region)})
 				if err != nil {
 					return err
@@ -365,7 +379,7 @@ func main() {
 
 				// if needed set creds for AssumeRole and reset session
 				if len(roleArn) > 0 {
-					sess = sess.Copy(&aws.Config{Credentials: getCreds(roleArn, externalID, sess)})
+					sess = sess.Copy(&aws.Config{Credentials: getCreds(roleArn, externalID, mfa, sess)})
 				}
 
 				// fetch account ID
