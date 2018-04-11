@@ -42,8 +42,9 @@ type CurConvert struct {
 	destArn          string
 	destExternalID   string
 
-	tempDir     string
-	concurrency int
+	tempDir         string
+	concurrency     int
+	fileConcurrency int
 
 	CurColumns     []string
 	CurFiles       []string
@@ -63,6 +64,7 @@ func NewCurConvert(sBucket string, sObject string, dBucket string, dObject strin
 
 	cur.tempDir = "/tmp"
 	cur.concurrency = 10
+	cur.fileConcurrency = 30
 
 	// over-ride CUR column types
 	cur.CurColumnTypes = make(map[string]string)
@@ -84,6 +86,16 @@ func NewCurConvert(sBucket string, sObject string, dBucket string, dObject strin
 	cur.CurParqetFiles = make(map[string]bool)
 
 	return cur
+}
+
+//
+// SetFileConcurrency - Allows for over-ride of number of CUR files processed concurrently
+func (c *CurConvert) SetFileConcurrency(concurrency int) error {
+	if concurrency < 1 || concurrency > 1000 {
+		return errors.New("File Concurrency must be between 1-1000")
+	}
+	c.fileConcurrency = concurrency
+	return nil
 }
 
 //
@@ -553,9 +565,11 @@ func (c *CurConvert) ConvertCur() error {
 	}
 
 	result := make(chan error)
+	limit := make(chan bool, c.fileConcurrency)
 	i := 0
 	for reportKey := range c.CurFiles {
 		go func(object string) {
+			limit <- true
 			gzipFile, err := c.DownloadCur(object)
 			if err != nil {
 				result <- fmt.Errorf("Error Downloading CUR: %s", err.Error())
@@ -575,6 +589,7 @@ func (c *CurConvert) ConvertCur() error {
 
 			os.Remove(gzipFile)
 			os.Remove(parquetFile)
+			<-limit
 			result <- nil
 		}(c.CurFiles[reportKey])
 		i++
