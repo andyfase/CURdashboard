@@ -30,16 +30,18 @@ type Map struct {
 }
 
 type TagMap struct {
-	Tag string `json:"tag"`
-	Map []Map  `json:"map"`
+	Tags []string `json:"tags"`
+	Map  []Map    `json:"map"`
+	Name string   `json:"name"`
 }
 
 type Config struct {
-	TagMap   []TagMap `json:"tagmap"`
-	Tags     string
-	Database string
-	Table    string
-	Account  string
+	TagMap       []TagMap            `json:"tagmap"`
+	TagBlacklist map[string][]string `json:"tagblacklist`
+	Tags         string
+	Database     string
+	Table        string
+	Account      string
 }
 
 type AthenaResponse struct {
@@ -188,12 +190,18 @@ func sendQuery(svc *athena.Athena, db string, sql string, account string, region
 
 func buildCostQuery(c *Config) string {
 	for _, tm := range c.TagMap {
-		c.Tags += "\"" + tm.Tag + "\","
+		for i := range tm.Tags {
+			c.Tags += "\"" + tm.Tags[i] + "\","
+		}
 	}
 	c.Tags = c.Tags[:len(c.Tags)-1]
 
-	sql := "select \"lineitem/productcode\" as service," + c.Tags + ", sum(\"lineitem/blendedcost\") as cost from " + c.Database + "." + c.Table + " group by \"lineitem/productcode\", " + c.Tags
-
+	sql := "select \"lineitem/productcode\" as service," +
+		c.Tags +
+		", sum(\"lineitem/blendedcost\") as cost from " +
+		c.Database + "." + c.Table +
+		" where \"lineitem/lineitemtype\" not in ('RIFee', 'Tax')" +
+		" group by \"lineitem/productcode\", " + c.Tags
 	return sql
 }
 
@@ -220,24 +228,30 @@ func findRegex(value string, list []string) bool {
 	return false
 }
 
-func findTagMatch(match string, m []Map) string {
+func findTagMatch(match string, m []Map, tag string, blacklist map[string][]string) (string, error) {
 	for _, object := range m {
 		if findExact(match, object.Match) {
-			return object.Value
+			return object.Value, nil
 		}
 	}
 
 	for _, object := range m {
 		if findRegex(match, object.Regex) {
-			return object.Value
+			return object.Value, nil
 		}
 	}
 
+	tagblacklist, ok := blacklist[tag]
+	if ok {
+		if findRegex(match, tagblacklist) {
+			return "", fmt.Errorf("No Match")
+		}
+	}
 	if len(match) > 0 {
-		return match
+		return match, nil
 	}
 
-	return "Untagged"
+	return "", fmt.Errorf("No Match")
 }
 
 func processResults(resp AthenaResponse, c Config) Results {
@@ -256,7 +270,18 @@ func processResults(resp AthenaResponse, c Config) Results {
 
 		tags := []string{row["service"]}
 		for _, tm := range c.TagMap {
-			tags = append(tags, findTagMatch(row[tm.Tag], tm.Map))
+			found := false
+			for i := range tm.Tags {
+				match, err := findTagMatch(row[tm.Tags[i]], tm.Map, tm.Tags[i], c.TagBlacklist)
+				if err == nil {
+					tags = append(tags, match)
+					found = true
+					break
+				}
+			}
+			if !found {
+				tags = append(tags, "Untagged")
+			}
 		}
 		r.tagCosts[strings.Join(tags, ",")] += f
 		r.total += f
@@ -270,15 +295,19 @@ func printResults(r Results, c Config) {
 	for k := range r.tagCosts {
 		keys = append(keys, k)
 	}
-	// sort.Slice(keys, func(i, j int) bool {
-	// 	return keys[i][0:strings.Index(keys[i], ",")] < keys[j][0:strings.Index(keys[j], ",")]
-	// })
+
+	var tagNames string
+	for _, v := range c.TagMap {
+		tagNames += "\"" + v.Name + "\","
+	}
+
 	sort.Strings(keys)
 
-	fmt.Println("\"service\"," + c.Tags + ",\"amount\"")
-
+	fmt.Println("\"service\"," + tagNames + "\"amount\"")
 	for _, k := range keys {
-		fmt.Printf("%s,%.2f\n", k, math.Round(r.tagCosts[k]/0.01)*0.01)
+		if math.Round(r.tagCosts[k]/0.01)*0.01 > 0.01 {
+			fmt.Printf("%s,%.2f\n", k, math.Round(r.tagCosts[k]/0.01)*0.01)
+		}
 	}
 	fmt.Println("---------------------")
 	fmt.Printf("Total: %.2f", math.Round(r.total/0.01)*0.01)
@@ -390,14 +419,14 @@ func main() {
 				}
 				conf.Account = *result.Account
 
-				// get Athena Data
+				// Cost Breakdown
 				svcAthena := athena.New(sess)
 				response, err := sendQuery(svcAthena, conf.Database, buildCostQuery(&conf), conf.Account, region, s3ResultsLocation)
 				if err != nil {
 					return err
 				}
-
 				printResults(processResults(response, conf), conf)
+
 				return nil
 			},
 		},
