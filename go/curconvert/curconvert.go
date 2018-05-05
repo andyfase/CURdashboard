@@ -13,7 +13,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/kms"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3crypto"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -36,6 +38,7 @@ type CurConvert struct {
 	sourceObject string
 	destBucket   string
 	destObject   string
+	destKMSKey   string
 
 	sourceArn        string
 	sourceExternalID string
@@ -137,6 +140,16 @@ func (c *CurConvert) SetDestPath(path string) error {
 		return errors.New("Must supply a Path")
 	}
 	c.destObject = path
+	return nil
+}
+
+//
+// SetDestKMSKey - sets the KMS Master key arn to use for
+func (c *CurConvert) SetDestKMSKey(key string) error {
+	if len(key) < 1 {
+		return errors.New("Must supply a Key ARN")
+	}
+	c.destKMSKey = key
 	return nil
 }
 
@@ -476,11 +489,7 @@ func (c *CurConvert) ParquetCur(inputFile string) (string, error) {
 	return localParquetFile, nil
 }
 
-//
-// UploadCur -
-func (c *CurConvert) UploadCur(parquetFile string) error {
-
-	uploadFile := c.destObject + "/" + parquetFile[strings.LastIndex(parquetFile, "/")+1:]
+func (c *CurConvert) uploadCUR(destObject string, file io.Reader) error {
 
 	// init S3 manager
 	s3up, err := c.initS3Uploader(c.destBucket, c.destArn, c.destExternalID)
@@ -488,25 +497,79 @@ func (c *CurConvert) UploadCur(parquetFile string) error {
 		return err
 	}
 
-	// open file
+	_, err = s3up.Upload(&s3manager.UploadInput{
+		Bucket: aws.String(c.destBucket),
+		Key:    aws.String(destObject),
+		Body:   file,
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to upload CUR parquet object, bucket: %s, object: %s, error: %s", c.destBucket, destObject, err.Error())
+	}
+
+	return nil
+}
+
+func (c *CurConvert) uploadEncryptedCUR(destObject string, file io.ReadSeeker) error {
+
+	// get location of bucket
+	bucketLocation, err := c.getBucketLocation(c.destBucket, c.destArn, c.destExternalID)
+	if err != nil {
+		return err
+	}
+
+	// Init Session
+	sess, err := session.NewSession(&aws.Config{Region: aws.String(bucketLocation), DisableRestProtocolURICleaning: aws.Bool(true)})
+	if err != nil {
+		return err
+	}
+
+	// if needed set creds for AssumeRole and reset session
+	if len(c.destArn) > 0 {
+		sess = sess.Copy(&aws.Config{Credentials: c.getCreds(c.destArn, c.destExternalID, sess)})
+	}
+
+	// init crypto lib
+	handler := s3crypto.NewKMSKeyGenerator(kms.New(sess), c.destKMSKey)
+	encryptionClient := s3crypto.NewEncryptionClient(sess, s3crypto.AESGCMContentCipherBuilder(handler))
+
+	req, _ := encryptionClient.PutObjectRequest(&s3.PutObjectInput{
+		Bucket: aws.String(c.destBucket),
+		Key:    aws.String(destObject),
+		Body:   file,
+	})
+
+	err = req.Send()
+	if err != nil {
+		return fmt.Errorf("failed to upload CUR parquet object, bucket: %s, object: %s, error: %s", c.destBucket, destObject, err.Error())
+	}
+
+	return nil
+}
+
+//
+// UploadCur -
+func (c *CurConvert) UploadCur(parquetFile string) error {
+
+	destObject := c.destObject + "/" + parquetFile[strings.LastIndex(parquetFile, "/")+1:]
+
 	file, err := os.Open(parquetFile)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	// Upload CUR manifest JSON
-	_, err = s3up.Upload(&s3manager.UploadInput{
-		Bucket: aws.String(c.destBucket),
-		Key:    aws.String(uploadFile),
-		Body:   file,
-	})
-
-	if err != nil {
-		return fmt.Errorf("failed to upload CUR parquet object, bucket: %s, object: %s, error: %s", c.destBucket, uploadFile, err.Error())
+	if len(c.destKMSKey) > 0 {
+		if err := c.uploadEncryptedCUR(destObject, file); err != nil {
+			return err
+		}
+	} else {
+		if err := c.uploadCUR(destObject, file); err != nil {
+			return err
+		}
 	}
 
-	c.CurParqetFiles[uploadFile] = true
+	c.CurParqetFiles[destObject] = true
 	return nil
 }
 
