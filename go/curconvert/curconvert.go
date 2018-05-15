@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -150,6 +151,20 @@ func (c *CurConvert) SetDestKMSKey(key string) error {
 		return errors.New("Must supply a Key ARN")
 	}
 	c.destKMSKey = key
+	return nil
+}
+
+//
+// SetTmpLocation - sets the temp directory for CUR files to be downloaded to, and parquet files to be written too
+func (c *CurConvert) SetTmpLocation(path string) error {
+	r, err := regexp.Compile("^/[A-Z,a-z,0-9,_,-,/]+[^/]$")
+	if err != nil {
+		return fmt.Errorf("Failed to set TempLocation, regexp error: %s", err)
+	}
+	if len(path) < 1 || !r.MatchString(path) {
+		return errors.New("Must supply a valid path that starts with '/' and is not terminated with '/'")
+	}
+	c.tempDir = path
 	return nil
 }
 
